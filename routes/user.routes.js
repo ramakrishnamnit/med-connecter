@@ -32,17 +32,6 @@ const router = express.Router();
  *           type: array
  *           items:
  *             type: string
- *     ChangePassword:
- *       type: object
- *       required:
- *         - currentPassword
- *         - newPassword
- *       properties:
- *         currentPassword:
- *           type: string
- *         newPassword:
- *           type: string
- *           minLength: 6
  */
 
 // Configure multer for memory storage (we'll upload directly to S3)
@@ -135,9 +124,9 @@ router.put('/profile',
 
 /**
  * @swagger
- * /api/v1/users/profile-picture:
- *   put:
- *     summary: Upload user profile picture
+ * /api/v1/users/profile/picture:
+ *   post:
+ *     summary: Update profile picture
  *     tags: [Users]
  *     security:
  *       - bearerAuth: []
@@ -148,21 +137,12 @@ router.put('/profile',
  *           schema:
  *             type: object
  *             properties:
- *               profilePicture:
+ *               picture:
  *                 type: string
  *                 format: binary
  *     responses:
  *       200:
  *         description: Profile picture updated successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 message:
- *                   type: string
- *                 avatarUrl:
- *                   type: string
  *       400:
  *         description: No file uploaded
  *       401:
@@ -172,45 +152,10 @@ router.put('/profile',
  *       500:
  *         description: Server error
  */
-router.put('/profile-picture', 
+router.post('/profile/picture',
   AuthMiddleware.authenticate,
-  upload.single('profilePicture'),
+  upload.single('picture'),
   UserHandler.updateProfilePicture
-);
-
-/**
- * @swagger
- * /api/v1/users/change-password:
- *   put:
- *     summary: Change user password
- *     tags: [Users]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/ChangePassword'
- *     responses:
- *       200:
- *         description: Password updated successfully
- *       400:
- *         description: Invalid input or current password is incorrect
- *       401:
- *         description: Unauthorized
- *       404:
- *         description: User not found
- *       500:
- *         description: Server error
- */
-router.put('/change-password', 
-  AuthMiddleware.authenticate,
-  [
-    body('currentPassword').isString().withMessage('Current password is required'),
-    body('newPassword').isString().isLength({ min: 8 }).withMessage('New password must be at least 8 characters long')
-  ],
-  UserHandler.changePassword
 );
 
 module.exports = router;

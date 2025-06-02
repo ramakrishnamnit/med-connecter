@@ -12,15 +12,21 @@ const generateOTP = () => {
 // Generate JWT token
 const generateToken = (user) => {
   try {
+    // Generate a unique token ID
+    const tokenId = crypto.randomBytes(32).toString('hex');
+    
     const payload = {
       userId: user._id,
+      tokenId: tokenId, // Include tokenId in payload
       iat: Math.floor(Date.now() / 1000),
       exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60) // 24 hours
     };
 
-    return jwt.sign(payload, process.env.JWT_SECRET, {
+    const token = jwt.sign(payload, process.env.JWT_SECRET, {
       algorithm: 'HS256'
     });
+
+    return { token, tokenId };
   } catch (error) {
     logger.error('Error generating JWT token:', error);
     throw new Error('Failed to generate authentication token');

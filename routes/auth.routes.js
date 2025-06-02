@@ -201,12 +201,11 @@ router.post('/verify/phone', AuthHandler.verifyPhone);
  *     tags: [Authentication]
  *     security:
  *       - bearerAuth: []
- *       - sessionId: []
  *     responses:
  *       200:
  *         description: Logged out successfully
  */
-router.post('/logout', AuthMiddleware.authenticate, sessionMiddleware, AuthHandler.logout);
+router.post('/logout', AuthMiddleware.authenticate, AuthHandler.logout);
 
 /**
  * @swagger
@@ -230,16 +229,15 @@ router.post('/logout/all', AuthMiddleware.authenticate, AuthHandler.logoutAll);
  *     summary: Refresh user session
  *     security:
  *       - bearerAuth: []
- *       - sessionId: []
  *     responses:
  *       200:
  *         description: Session refreshed successfully
  *       401:
  *         description: Invalid or expired session
  */
-router.post('/refresh-session', AuthMiddleware.authenticate, sessionMiddleware, async (req, res) => {
+router.post('/refresh-session', AuthMiddleware.authenticate, async (req, res) => {
   try {
-    const session = await Session.findById(req.headers['x-session-id']);
+    const session = req.session;
     
     if (!session) {
       return res.status(401).json({

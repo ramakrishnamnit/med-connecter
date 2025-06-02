@@ -93,33 +93,27 @@ class AuthHandler {
         });
       }
 
-      // Check for existing active session for this device
-      let session = await Session.findOne({
-        userId: user._id,
-        'deviceInfo.deviceId': deviceInfo?.deviceId,
-        isActive: true
-      });
-
-      if (session) {
-        // Update existing session
-        session.lastActivity = new Date();
-        session.deviceInfo = deviceInfo;
-        await session.save();
-      } else {
-        // Create new session
-        session = new Session({
-          userId: user._id,
-          deviceInfo,
-          isActive: true,
-          lastActivity: new Date()
-        });
-        await session.save();
+      // Auto-verify the identifier used for login
+      if (type === 'email' && !user.isEmailVerified) {
+        user.isEmailVerified = true;
+      } else if (type === 'phone' && !user.isPhoneVerified) {
+        user.isPhoneVerified = true;
       }
 
-      // Generate token
-      const token = generateToken(user._id, user.role);
+      // Generate token with tokenId
+      const { token, tokenId } = generateToken(user);
 
-      // Update last login
+      // Create new session
+      const session = new Session({
+        userId: user._id,
+        tokenId,
+        deviceInfo,
+        isActive: true,
+        lastActivity: new Date()
+      });
+      await session.save();
+
+      // Update last login and save user
       user.lastLogin = new Date();
       await user.save();
 
@@ -138,7 +132,7 @@ class AuthHandler {
         }
       });
     } catch (error) {
-      console.error('Login verification error:', error);
+      logger.error('Login verification error:', error);
       res.status(500).json({ 
         success: false, 
         error: 'Failed to verify login' 
@@ -515,20 +509,12 @@ class AuthHandler {
   // Logout from current device
   static async logout(req, res) {
     try {
-      const sessionId = req.headers['x-session-id'];
+      const session = req.session;
       
-      if (!sessionId) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Session ID is required'
-        });
-      }
-
-      const session = await Session.findById(sessionId);
       if (!session) {
-        return res.status(404).json({
+        return res.status(401).json({
           status: 'error',
-          message: 'Session not found'
+          message: 'No active session found'
         });
       }
 

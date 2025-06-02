@@ -2,19 +2,18 @@ const mongoose = require('mongoose');
 
 const sessionSchema = new mongoose.Schema({
   userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  tokenId: {
     type: String,
     required: true,
-    index: true
+    unique: true
   },
   deviceInfo: {
-    deviceId: {
-      type: String,
-      required: true
-    },
-    deviceType: {
-      type: String,
-      required: true
-    },
+    deviceId: String,
+    deviceType: String,
     browser: String,
     os: String,
     ipAddress: String
@@ -27,9 +26,7 @@ const sessionSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
-  loggedOutAt: {
-    type: Date
-  },
+  loggedOutAt: Date,
   createdAt: {
     type: Date,
     default: Date.now
@@ -38,9 +35,9 @@ const sessionSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for faster queries
-sessionSchema.index({ userId: 1, 'deviceInfo.deviceId': 1 });
-sessionSchema.index({ isActive: 1 });
+// Indexes
+sessionSchema.index({ userId: 1, isActive: 1 });
+sessionSchema.index({ tokenId: 1 }, { unique: true });
 sessionSchema.index({ lastActivity: 1 });
 
 // Method to check if session is expired (e.g., 24 hours of inactivity)

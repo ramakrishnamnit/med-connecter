@@ -6,19 +6,12 @@ const REFRESH_THRESHOLD = 5 * 60 * 1000; // 5 minutes in milliseconds
 
 const sessionMiddleware = async (req, res, next) => {
   try {
-    const sessionId = req.headers['x-session-id'];
-    
-    if (!sessionId) {
-      return next();
-    }
-
-    const session = await Session.findById(sessionId);
+    // Session is already validated in auth middleware
+    // Just handle refresh logic here
+    const session = req.session;
     
     if (!session) {
-      return res.status(401).json({
-        status: 'error',
-        message: 'Invalid session'
-      });
+      return next();
     }
 
     const now = Date.now();
@@ -26,7 +19,7 @@ const sessionMiddleware = async (req, res, next) => {
     
     // Check if session is expired
     if (sessionAge > SESSION_EXPIRY) {
-      await Session.findByIdAndDelete(sessionId);
+      await Session.findByIdAndDelete(session._id);
       return res.status(401).json({
         status: 'error',
         message: 'Session expired'
@@ -47,8 +40,6 @@ const sessionMiddleware = async (req, res, next) => {
     session.lastActivity = now;
     await session.save();
 
-    // Add session info to request
-    req.session = session;
     next();
   } catch (error) {
     logger.error('Session middleware error:', error);

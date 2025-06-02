@@ -104,7 +104,7 @@ router.post('/',
   AuthMiddleware.authorize(['user']),
   [
     body('doctorId').isMongoId().withMessage('Invalid doctor ID'),
-    body('rating').isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
+  body('rating').isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
     body('comment').optional().isString().withMessage('Comment must be a string')
   ],
   async (req, res, next) => {

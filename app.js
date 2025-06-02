@@ -129,19 +129,12 @@ const swaggerOptions = {
           scheme: 'bearer',
           bearerFormat: 'JWT',
           description: 'Enter your JWT token in the format: Bearer <token>'
-        },
-        sessionId: {
-          type: 'apiKey',
-          in: 'header',
-          name: 'x-session-id',
-          description: 'Enter your session ID'
         }
       }
     },
     security: [
       {
-        bearerAuth: [],
-        sessionId: []
+        bearerAuth: []
       }
     ]
   },
@@ -150,13 +143,12 @@ const swaggerOptions = {
 
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
-// Add custom operation filter to ensure both headers are included
+// Add custom operation filter to ensure bearer auth is included
 Object.keys(swaggerSpec.paths).forEach(path => {
   Object.keys(swaggerSpec.paths[path]).forEach(method => {
     const operation = swaggerSpec.paths[path][method];
     operation.security = [{
-      bearerAuth: [],
-      sessionId: []
+      bearerAuth: []
     }];
   });
 });

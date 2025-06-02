@@ -33,16 +33,31 @@ class AuthMiddleware {
         }
 
         // Check if user is active
-        if ("active"!=user.status) {
+        if (user.status !== 'active') {
           return res.status(401).json({
             success: false,
             error: 'User account is inactive'
           });
         }
 
-        // Attach user to request object
+        // Verify session exists and is active
+        const session = await Session.findOne({
+          userId: user._id,
+          tokenId: decoded.tokenId,
+          isActive: true
+        });
+
+        if (!session) {
+          return res.status(401).json({
+            success: false,
+            error: 'Invalid or expired session'
+          });
+        }
+
+        // Attach user and session to request object
         req.user = user;
         req.token = token;
+        req.session = session;
         next();
       } catch (error) {
         logger.error('Token verification error:', error);
