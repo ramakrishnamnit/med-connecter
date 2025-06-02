@@ -5,8 +5,10 @@ const mongoose = require('mongoose');
 const Payment = require('../models/payment.model');
 const Appointment = require('../models/appointment.model');
 const Doctor = require('../models/doctor.model');
-const { verifyToken } = require('../middleware/auth.middleware');
+const AuthMiddleware = require('../middleware/auth.middleware');
 const { sendEmail } = require('../services/aws.service');
+const PaymentHandler = require('../handlers/payment.handler');
+const logger = require('../utils/logger');
 
 // Initialize Mollie client
 // const mollieClient = createMollieClient({ apiKey: process.env.MOLLIE_API_KEY });
@@ -15,9 +17,48 @@ const router = express.Router();
 
 /**
  * @swagger
+ * components:
+ *   schemas:
+ *     Payment:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: The payment ID
+ *         appointmentId:
+ *           type: string
+ *           description: Associated appointment ID
+ *         amount:
+ *           type: number
+ *           description: Payment amount
+ *         currency:
+ *           type: string
+ *           description: Payment currency
+ *         status:
+ *           type: string
+ *           enum: [pending, completed, failed, refunded]
+ *           description: Current status of the payment
+ *         paymentMethod:
+ *           type: string
+ *           description: Payment method used
+ *         transactionId:
+ *           type: string
+ *           description: External transaction ID
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the payment was created
+ *         updatedAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the payment was last updated
+ */
+
+/**
+ * @swagger
  * tags:
  *   name: Payments
- *   description: Payment processing endpoints
+ *   description: Payment management endpoints
  */
 
 /**
@@ -242,50 +283,242 @@ const router = express.Router();
  */
 
 /**
- * @route POST /api/payments/initiate
- * @desc Initiate payment for an appointment
- * @access Private
- */
-router.post('/initiate', verifyToken, [
-  body('appointmentId').notEmpty().withMessage('Appointment ID is required'),
-  body('method').isIn(['iDEAL', 'card', 'paypal']).withMessage('Valid payment method is required')
-], async (req, res) => {
-  // Temporary response until payment provider is decided
-  res.status(200).json({
-    message: 'Payment functionality is currently under development',
-    status: 'pending',
-    mockPaymentUrl: 'https://example.com/payment',
-    paymentId: 'mock-payment-id'
-  });
-});
-
-/**
  * @route GET /api/payments/:id
  * @desc Get payment status by ID
  * @access Private
  */
-router.get('/:id', verifyToken, async (req, res) => {
-  // Temporary response until payment provider is decided
-  res.status(200).json({
-    message: 'Payment functionality is currently under development',
-    payment: {
-      status: 'pending',
-      amount: 0,
-      currency: 'EUR'
-    }
-  });
-});
+router.get('/:id', 
+  AuthMiddleware.authenticate,
+  PaymentHandler.getPaymentById
+);
 
 /**
- * @route POST /api/payments/webhook
- * @desc Handle payment webhooks
- * @access Public
+ * @swagger
+ * /api/v1/payments/initiate:
+ *   post:
+ *     tags:
+ *       - Payments
+ *     summary: Initiate a payment
+ *     description: Start a new payment process for an appointment
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - appointmentId
+ *               - amount
+ *               - currency
+ *             properties:
+ *               appointmentId:
+ *                 type: string
+ *                 description: ID of the appointment
+ *               amount:
+ *                 type: number
+ *                 description: Payment amount
+ *               currency:
+ *                 type: string
+ *                 description: Payment currency
+ *               paymentMethod:
+ *                 type: string
+ *                 description: Payment method to use
+ *     responses:
+ *       201:
+ *         description: Payment initiated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Payment'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Appointment not found
+ *       500:
+ *         description: Server error
  */
-router.post('/webhook', async (req, res) => {
-  // Temporary response until payment provider is decided
-  res.status(200).json({
-    message: 'Payment webhook functionality is currently under development'
-  });
-});
+router.post('/initiate', 
+  AuthMiddleware.authenticate,
+  [
+    body('appointmentId').isMongoId().withMessage('Invalid appointment ID'),
+    body('paymentMethod').isIn(['card', 'bank_transfer']).withMessage('Invalid payment method')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Initiating payment', {
+        userId: req.user.id,
+        appointmentId: req.body.appointmentId,
+        paymentMethod: req.body.paymentMethod
+      });
+      await PaymentHandler.initiatePayment(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/payments/{id}:
+ *   get:
+ *     tags:
+ *       - Payments
+ *     summary: Get payment details
+ *     description: Retrieve details of a specific payment
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Payment ID
+ *     responses:
+ *       200:
+ *         description: Payment details retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Payment'
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Payment not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/:id', 
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching payment details', {
+        userId: req.user.id,
+        paymentId: req.params.id
+      });
+      await PaymentHandler.getPaymentDetails(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/payments/{id}/refund:
+ *   post:
+ *     tags:
+ *       - Payments
+ *     summary: Process a refund
+ *     description: Initiate a refund for a completed payment
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Payment ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reason
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Reason for the refund
+ *     responses:
+ *       200:
+ *         description: Refund processed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Payment'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to process refund
+ *       404:
+ *         description: Payment not found
+ *       409:
+ *         description: Payment cannot be refunded
+ *       500:
+ *         description: Server error
+ */
+router.post('/:id/refund', 
+  AuthMiddleware.authenticate,
+  AuthMiddleware.authorize(['admin']),
+  [
+    body('reason').isString().withMessage('Refund reason is required')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Processing refund', {
+        userId: req.user.id,
+        paymentId: req.params.id,
+        reason: req.body.reason
+      });
+      await PaymentHandler.processRefund(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/payments/webhook:
+ *   post:
+ *     tags:
+ *       - Payments
+ *     summary: Handle payment webhook
+ *     description: Process webhook notifications from payment provider
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - event
+ *               - data
+ *             properties:
+ *               event:
+ *                 type: string
+ *                 description: Webhook event type
+ *               data:
+ *                 type: object
+ *                 description: Event data
+ *     responses:
+ *       200:
+ *         description: Webhook processed successfully
+ *       400:
+ *         description: Invalid webhook data
+ *       500:
+ *         description: Server error
+ */
+router.post('/webhook', 
+  async (req, res, next) => {
+    try {
+      logger.info('Processing payment webhook', {
+        event: req.body.event
+      });
+      await PaymentHandler.handleWebhook(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 module.exports = router;

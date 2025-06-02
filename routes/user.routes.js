@@ -1,9 +1,11 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const mongoose = require('mongoose');
 const multer = require('multer');
 const User = require('../models/user.model');
-const { verifyToken } = require('../middleware/auth.middleware');
-const { uploadToS3 } = require('../services/aws.service');
+const AuthMiddleware = require('../middleware/auth.middleware');
+const UserHandler = require('../handlers/user.handler');
+const AWSService = require('../services/aws.service');
 
 const router = express.Router();
 
@@ -59,7 +61,7 @@ const upload = multer({
 
 /**
  * @swagger
- * /api/users/profile:
+ * /api/v1/users/profile:
  *   get:
  *     summary: Get user profile
  *     tags: [Users]
@@ -79,23 +81,14 @@ const upload = multer({
  *       500:
  *         description: Server error
  */
-router.get('/profile', verifyToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id).select('-password');
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    
-    res.json(user);
-  } catch (error) {
-    console.error('Get profile error:', error);
-    res.status(500).json({ message: 'Server error fetching user profile' });
-  }
-});
+router.get('/profile', 
+  AuthMiddleware.authenticate,
+  UserHandler.getProfile
+);
 
 /**
  * @swagger
- * /api/users/profile:
+ * /api/v1/users/profile:
  *   put:
  *     summary: Update user profile
  *     tags: [Users]
@@ -128,55 +121,21 @@ router.get('/profile', verifyToken, async (req, res) => {
  *       500:
  *         description: Server error
  */
-router.put('/profile', verifyToken, [
-  body('firstName').optional().trim().notEmpty().withMessage('First name cannot be empty'),
-  body('lastName').optional().trim().notEmpty().withMessage('Last name cannot be empty'),
-  body('phone').optional().trim().notEmpty().withMessage('Phone cannot be empty'),
-  body('dob').optional().isISO8601().withMessage('Valid date of birth required'),
-  body('gender').optional().isIn(['male', 'female', 'other']).withMessage('Valid gender required'),
-  body('languages').optional().isArray().withMessage('Languages must be an array')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const { firstName, lastName, phone, dob, gender, languages } = req.body;
-    
-    // Find the user
-    const user = await User.findById(req.user.id);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    
-    // Update user fields
-    if (firstName) user.firstName = firstName;
-    if (lastName) user.lastName = lastName;
-    if (phone) user.phone = phone;
-    if (dob) user.dob = new Date(dob);
-    if (gender) user.gender = gender;
-    if (languages) user.languages = languages;
-    
-    user.updatedAt = Date.now();
-    await user.save();
-    
-    res.json({
-      message: 'Profile updated successfully',
-      user: {
-        ...user.toObject(),
-        password: undefined
-      }
-    });
-  } catch (error) {
-    console.error('Update profile error:', error);
-    res.status(500).json({ message: 'Server error updating user profile' });
-  }
-});
+router.put('/profile', 
+  AuthMiddleware.authenticate,
+  [
+    body('firstName').optional().isString().withMessage('First name must be a string'),
+    body('lastName').optional().isString().withMessage('Last name must be a string'),
+    body('phone').optional().isString().withMessage('Phone must be a string'),
+    body('address').optional().isObject().withMessage('Address must be an object'),
+    body('languages').optional().isArray().withMessage('Languages must be an array')
+  ],
+  UserHandler.updateProfile
+);
 
 /**
  * @swagger
- * /api/users/profile-picture:
+ * /api/v1/users/profile-picture:
  *   put:
  *     summary: Upload user profile picture
  *     tags: [Users]
@@ -213,41 +172,15 @@ router.put('/profile', verifyToken, [
  *       500:
  *         description: Server error
  */
-router.put('/profile-picture', verifyToken, upload.single('profilePicture'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
-    }
-    
-    // Upload to S3
-    const imageUrl = await uploadToS3(
-      req.file.buffer,
-      req.file.originalname,
-      req.file.mimetype
-    );
-    
-    // Update user profile
-    const user = await User.findById(req.user.id);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    
-    user.avatarUrl = imageUrl;
-    await user.save();
-    
-    res.json({
-      message: 'Profile picture updated successfully',
-      avatarUrl: imageUrl
-    });
-  } catch (error) {
-    console.error('Profile picture upload error:', error);
-    res.status(500).json({ message: 'Server error uploading profile picture' });
-  }
-});
+router.put('/profile-picture', 
+  AuthMiddleware.authenticate,
+  upload.single('profilePicture'),
+  UserHandler.updateProfilePicture
+);
 
 /**
  * @swagger
- * /api/users/change-password:
+ * /api/v1/users/change-password:
  *   put:
  *     summary: Change user password
  *     tags: [Users]
@@ -271,39 +204,13 @@ router.put('/profile-picture', verifyToken, upload.single('profilePicture'), asy
  *       500:
  *         description: Server error
  */
-router.put('/change-password', verifyToken, [
-  body('currentPassword').notEmpty().withMessage('Current password is required'),
-  body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const { currentPassword, newPassword } = req.body;
-    
-    // Find the user
-    const user = await User.findById(req.user.id);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    
-    // Verify current password
-    const isMatch = await user.comparePassword(currentPassword);
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Current password is incorrect' });
-    }
-    
-    // Update password
-    user.password = newPassword; // Will be hashed in the pre-save hook
-    await user.save();
-    
-    res.json({ message: 'Password updated successfully' });
-  } catch (error) {
-    console.error('Change password error:', error);
-    res.status(500).json({ message: 'Server error changing password' });
-  }
-});
+router.put('/change-password', 
+  AuthMiddleware.authenticate,
+  [
+    body('currentPassword').isString().withMessage('Current password is required'),
+    body('newPassword').isString().isLength({ min: 8 }).withMessage('New password must be at least 8 characters long')
+  ],
+  UserHandler.changePassword
+);
 
 module.exports = router;

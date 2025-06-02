@@ -1,261 +1,330 @@
 const express = require('express');
 const router = express.Router();
-const { body, validationResult } = require('express-validator');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const User = require('../models/user.model');
-const Doctor = require('../models/doctor.model');
-const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/email.service');
-const { generateVerificationToken, generatePasswordResetToken } = require('../utils/token.utils');
-const { verifyToken } = require('../middleware/auth.middleware');
+const AuthHandler = require('../handlers/auth.handler');
+const AuthMiddleware = require('../middleware/auth.middleware');
+const sessionMiddleware = require('../middleware/session.middleware');
+const Session = require('../models/session.model');
+const logger = require('../utils/logger');
 
-// Register new user
-router.post('/register',
-  [
-    body('email').isEmail().normalizeEmail(),
-    body('password').isLength({ min: 6 }),
-    body('firstName').trim().notEmpty(),
-    body('lastName').trim().notEmpty(),
-    body('role').isIn(['patient', 'doctor'])
-  ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ error: true, message: errors.array() });
-      }
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     RegisterRequest:
+ *       type: object
+ *       required:
+ *         - email
+ *         - phone
+ *         - firstName
+ *         - lastName
+ *         - role
+ *       properties:
+ *         email:
+ *           type: string
+ *           format: email
+ *         phone:
+ *           type: object
+ *           properties:
+ *             countryCode:
+ *               type: string
+ *             number:
+ *               type: string
+ *         firstName:
+ *           type: string
+ *         lastName:
+ *           type: string
+ *         role:
+ *           type: string
+ *           enum: [patient, doctor]
+ *         address:
+ *           type: object
+ *           properties:
+ *             street:
+ *               type: string
+ *             city:
+ *               type: string
+ *             state:
+ *               type: string
+ *             country:
+ *               type: string
+ *             postalCode:
+ *               type: string
+ */
 
-      const { email, password, firstName, lastName, role } = req.body;
+/**
+ * @swagger
+ * /api/v1/auth/register:
+ *   post:
+ *     summary: Register a new user
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/RegisterRequest'
+ *     responses:
+ *       201:
+ *         description: User registered successfully
+ *       400:
+ *         description: Invalid input data
+ */
+router.post('/register', AuthHandler.register);
 
-      // Check if user already exists
-      const existingUser = await User.findOne({ email });
-      if (existingUser) {
-        return res.status(400).json({ error: true, message: 'User already exists' });
-      }
+/**
+ * @swagger
+ * /api/v1/auth/login/initiate:
+ *   post:
+ *     summary: Initiate login process
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - identifier
+ *             properties:
+ *               identifier:
+ *                 type: string
+ *                 description: Email or phone number
+ *     responses:
+ *       200:
+ *         description: OTP sent successfully
+ *       404:
+ *         description: User not found
+ */
+router.post('/login/initiate', AuthHandler.initiateLogin);
 
-      // Hash password
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(password, salt);
+/**
+ * @swagger
+ * /api/v1/auth/login/verify:
+ *   post:
+ *     summary: Verify login OTP
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - identifier
+ *               - otp
+ *               - type
+ *               - deviceInfo
+ *             properties:
+ *               identifier:
+ *                 type: string
+ *               otp:
+ *                 type: string
+ *               type:
+ *                 type: string
+ *                 enum: [email, phone]
+ *               deviceInfo:
+ *                 type: object
+ *                 properties:
+ *                   deviceId:
+ *                     type: string
+ *                   deviceType:
+ *                     type: string
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *       400:
+ *         description: Invalid OTP
+ */
+router.post('/login/verify', AuthHandler.verifyLogin);
 
-      // Create user
-      const user = new User({
-        email,
-        password: hashedPassword,
-        firstName,
-        lastName,
-        role
-      });
+/**
+ * @swagger
+ * /api/v1/auth/verify/email:
+ *   post:
+ *     summary: Verify email address
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - otp
+ *             properties:
+ *               email:
+ *                 type: string
+ *               otp:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Email verified successfully
+ *       400:
+ *         description: Invalid OTP
+ */
+router.post('/verify/email', AuthHandler.verifyEmail);
 
-      await user.save();
+/**
+ * @swagger
+ * /api/v1/auth/verify/phone:
+ *   post:
+ *     summary: Verify phone number
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - phone
+ *               - otp
+ *             properties:
+ *               phone:
+ *                 type: string
+ *               otp:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Phone verified successfully
+ *       400:
+ *         description: Invalid OTP
+ */
+router.post('/verify/phone', AuthHandler.verifyPhone);
 
-      // If user is a doctor, create doctor profile
-      if (role === 'doctor') {
-        const doctor = new Doctor({
-          userId: user._id,
-          verificationStatus: 'pending'
-        });
-        await doctor.save();
-      }
+/**
+ * @swagger
+ * /api/v1/auth/logout:
+ *   post:
+ *     summary: Logout from current device
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *       - sessionId: []
+ *     responses:
+ *       200:
+ *         description: Logged out successfully
+ */
+router.post('/logout', AuthMiddleware.authenticate, sessionMiddleware, AuthHandler.logout);
 
-      // Generate verification token
-      const verificationToken = generateVerificationToken(user._id);
+/**
+ * @swagger
+ * /api/v1/auth/logout/all:
+ *   post:
+ *     summary: Logout from all devices
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Logged out from all devices
+ */
+router.post('/logout/all', AuthMiddleware.authenticate, AuthHandler.logoutAll);
 
-      // Send verification email
-      await sendVerificationEmail(user.email, verificationToken);
-
-      res.status(201).json({
-        message: 'User registered successfully. Please check your email for verification.',
-        user: {
-          id: user._id,
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          role: user.role
-        }
-      });
-    } catch (error) {
-      console.error('Registration error:', error);
-      res.status(500).json({ error: true, message: 'Server error' });
-    }
-  }
-);
-
-// Login user
-router.post('/login',
-  [
-    body('email').isEmail().normalizeEmail(),
-    body('password').exists()
-  ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ error: true, message: errors.array() });
-      }
-
-      const { email, password } = req.body;
-
-      // Check if user exists
-      const user = await User.findOne({ email });
-      if (!user) {
-        return res.status(401).json({ error: true, message: 'Invalid credentials' });
-      }
-
-      // Check if user is verified
-      if (!user.isVerified) {
-        return res.status(401).json({ error: true, message: 'Please verify your email first' });
-      }
-
-      // Check password
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) {
-        return res.status(401).json({ error: true, message: 'Invalid credentials' });
-      }
-
-      // Generate JWT token
-      const token = jwt.sign(
-        { userId: user._id, role: user.role },
-        process.env.JWT_SECRET,
-        { expiresIn: '24h' }
-      );
-
-      res.json({
-        token,
-        user: {
-          id: user._id,
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          role: user.role
-        }
-      });
-    } catch (error) {
-      console.error('Login error:', error);
-      res.status(500).json({ error: true, message: 'Server error' });
-    }
-  }
-);
-
-// Verify email
-router.get('/verify-email/:token', async (req, res) => {
+/**
+ * @swagger
+ * /api/v1/auth/refresh-session:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Refresh user session
+ *     security:
+ *       - bearerAuth: []
+ *       - sessionId: []
+ *     responses:
+ *       200:
+ *         description: Session refreshed successfully
+ *       401:
+ *         description: Invalid or expired session
+ */
+router.post('/refresh-session', AuthMiddleware.authenticate, sessionMiddleware, async (req, res) => {
   try {
-    const { token } = req.params;
-
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded || !decoded.userId) {
-      return res.status(400).json({ error: true, message: 'Invalid verification token' });
+    const session = await Session.findById(req.headers['x-session-id']);
+    
+    if (!session) {
+      return res.status(401).json({
+        status: 'error',
+        message: 'Invalid session'
+      });
     }
 
-    // Update user verification status
-    const user = await User.findById(decoded.userId);
-    if (!user) {
-      return res.status(404).json({ error: true, message: 'User not found' });
-    }
+    // Update last activity
+    session.lastActivity = Date.now();
+    await session.save();
 
-    if (user.isVerified) {
-      return res.status(400).json({ error: true, message: 'Email already verified' });
-    }
-
-    user.isVerified = true;
-    await user.save();
-
-    res.json({ message: 'Email verified successfully' });
+    res.json({
+      status: 'success',
+      message: 'Session refreshed successfully',
+      session: {
+        id: session._id,
+        lastActivity: session.lastActivity
+      }
+    });
   } catch (error) {
-    console.error('Email verification error:', error);
-    res.status(500).json({ error: true, message: 'Server error' });
+    logger.error('Session refresh error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Error refreshing session'
+    });
   }
 });
 
-// Request password reset
-router.post('/forgot-password',
-  [
-    body('email').isEmail().normalizeEmail()
-  ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ error: true, message: errors.array() });
-      }
+/**
+ * @swagger
+ * /api/v1/auth/verify/status:
+ *   post:
+ *     summary: Check verification status
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - identifier
+ *             properties:
+ *               identifier:
+ *                 type: string
+ *                 description: Email or phone number
+ *     responses:
+ *       200:
+ *         description: Verification status retrieved successfully
+ *       404:
+ *         description: User not found
+ */
+router.post('/verify/status', AuthHandler.checkVerificationStatus);
 
-      const { email } = req.body;
+/**
+ * @swagger
+ * /api/v1/auth/verify/resend:
+ *   post:
+ *     summary: Resend verification OTP
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - identifier
+ *               - type
+ *             properties:
+ *               identifier:
+ *                 type: string
+ *                 description: Email or phone number
+ *               type:
+ *                 type: string
+ *                 enum: [email, phone]
+ *     responses:
+ *       200:
+ *         description: OTP sent successfully
+ *       400:
+ *         description: Already verified or invalid request
+ *       404:
+ *         description: User not found
+ */
+router.post('/verify/resend', AuthHandler.resendVerificationOTP);
 
-      // Check if user exists
-      const user = await User.findOne({ email });
-      if (!user) {
-        return res.status(404).json({ error: true, message: 'User not found' });
-      }
-
-      // Generate password reset token
-      const resetToken = generatePasswordResetToken(user._id);
-
-      // Send password reset email
-      await sendPasswordResetEmail(user.email, resetToken);
-
-      res.json({ message: 'Password reset instructions sent to your email' });
-    } catch (error) {
-      console.error('Password reset request error:', error);
-      res.status(500).json({ error: true, message: 'Server error' });
-    }
-  }
-);
-
-// Reset password
-router.post('/reset-password',
-  [
-    body('token').notEmpty(),
-    body('password').isLength({ min: 6 })
-  ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ error: true, message: errors.array() });
-      }
-
-      const { token, password } = req.body;
-
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      if (!decoded || !decoded.userId) {
-        return res.status(400).json({ error: true, message: 'Invalid reset token' });
-      }
-
-      // Update user password
-      const user = await User.findById(decoded.userId);
-      if (!user) {
-        return res.status(404).json({ error: true, message: 'User not found' });
-      }
-
-      // Hash new password
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(password, salt);
-
-      user.password = hashedPassword;
-      await user.save();
-
-      res.json({ message: 'Password reset successfully' });
-    } catch (error) {
-      console.error('Password reset error:', error);
-      res.status(500).json({ error: true, message: 'Server error' });
-    }
-  }
-);
-
-// Get current user
-router.get('/me', verifyToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId).select('-password');
-    if (!user) {
-      return res.status(404).json({ error: true, message: 'User not found' });
-    }
-
-    res.json(user);
-  } catch (error) {
-    console.error('Get current user error:', error);
-    res.status(500).json({ error: true, message: 'Server error' });
-  }
-});
-
-module.exports = router;
+module.exports = router; 

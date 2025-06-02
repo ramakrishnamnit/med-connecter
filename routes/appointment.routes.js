@@ -1,15 +1,64 @@
 const express = require('express');
-const { body, validationResult } = require('express-validator');
+const { body, validationResult, query } = require('express-validator');
 const mongoose = require('mongoose');
 const Appointment = require('../models/appointment.model');
 const Doctor = require('../models/doctor.model');
 const User = require('../models/user.model');
 const Chat = require('../models/chat.model');
 const VideoSession = require('../models/video.model');
-const { verifyToken, isDoctor } = require('../middleware/auth.middleware');
+const AuthMiddleware = require('../middleware/auth.middleware');
 const { sendEmail, sendSMS, queueJob } = require('../services/aws.service');
+const AppointmentHandler = require('../handlers/appointment.handler');
+const logger = require('../utils/logger');
 
 const router = express.Router();
+
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     Appointment:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: The appointment ID
+ *         doctorId:
+ *           type: string
+ *           description: ID of the doctor
+ *         patientId:
+ *           type: string
+ *           description: ID of the patient
+ *         date:
+ *           type: string
+ *           format: date
+ *           description: Appointment date
+ *         timeSlot:
+ *           type: string
+ *           description: Time slot of the appointment
+ *         type:
+ *           type: string
+ *           enum: [in-person, video]
+ *           description: Type of appointment
+ *         status:
+ *           type: string
+ *           enum: [pending, confirmed, cancelled, completed]
+ *           description: Current status of the appointment
+ *         reason:
+ *           type: string
+ *           description: Reason for the appointment
+ *         notes:
+ *           type: string
+ *           description: Doctor's notes about the appointment
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the appointment was created
+ *         updatedAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the appointment was last updated
+ */
 
 /**
  * @swagger
@@ -20,11 +69,12 @@ const router = express.Router();
 
 /**
  * @swagger
- * /api/appointments:
+ * /api/v1/appointments:
  *   get:
  *     tags:
  *       - Appointments
  *     summary: Get user's appointments
+ *     description: Retrieve all appointments for the authenticated user (patient or doctor)
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -32,7 +82,7 @@ const router = express.Router();
  *         name: status
  *         schema:
  *           type: string
- *           enum: [scheduled, completed, cancelled]
+ *           enum: [pending, confirmed, cancelled, completed]
  *         description: Filter by appointment status
  *       - in: query
  *         name: type
@@ -63,7 +113,7 @@ const router = express.Router();
  *                 appointments:
  *                   type: array
  *                   items:
- *                     $ref: '#/definitions/Appointment'
+ *                     $ref: '#/components/schemas/Appointment'
  *                 total:
  *                   type: integer
  *                 page:
@@ -78,11 +128,12 @@ const router = express.Router();
 
 /**
  * @swagger
- * /api/appointments:
+ * /api/v1/appointments:
  *   post:
  *     tags:
  *       - Appointments
  *     summary: Create a new appointment
+ *     description: Create a new appointment with a doctor
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -94,35 +145,35 @@ const router = express.Router();
  *             required:
  *               - doctorId
  *               - date
- *               - time
+ *               - timeSlot
  *               - type
  *             properties:
  *               doctorId:
  *                 type: string
+ *                 description: ID of the doctor
  *               date:
  *                 type: string
  *                 format: date
- *               time:
+ *                 description: Appointment date (YYYY-MM-DD)
+ *               timeSlot:
  *                 type: string
- *                 format: time
+ *                 description: Time slot for the appointment
  *               type:
  *                 type: string
  *                 enum: [in-person, video]
+ *                 description: Type of appointment
  *               reason:
  *                 type: string
- *               symptoms:
- *                 type: array
- *                 items:
- *                   type: string
+ *                 description: Reason for the appointment
  *     responses:
  *       201:
  *         description: Appointment created successfully
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/definitions/Appointment'
+ *               $ref: '#/components/schemas/Appointment'
  *       400:
- *         description: Invalid input
+ *         description: Invalid request data
  *       401:
  *         description: Unauthorized
  *       404:
@@ -133,11 +184,12 @@ const router = express.Router();
 
 /**
  * @swagger
- * /api/appointments/{id}:
+ * /api/v1/appointments/{id}:
  *   get:
  *     tags:
  *       - Appointments
  *     summary: Get appointment details
+ *     description: Retrieve details of a specific appointment
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -153,7 +205,7 @@ const router = express.Router();
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/definitions/Appointment'
+ *               $ref: '#/components/schemas/Appointment'
  *       401:
  *         description: Unauthorized
  *       404:
@@ -164,11 +216,12 @@ const router = express.Router();
 
 /**
  * @swagger
- * /api/appointments/{id}:
+ * /api/v1/appointments/{id}/status:
  *   put:
  *     tags:
  *       - Appointments
  *     summary: Update appointment status
+ *     description: Update the status of an appointment
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -189,18 +242,21 @@ const router = express.Router();
  *             properties:
  *               status:
  *                 type: string
- *                 enum: [scheduled, completed, cancelled]
- *               reason:
- *                 type: string
+ *                 enum: [pending, confirmed, cancelled, completed]
+ *                 description: New status of the appointment
  *     responses:
  *       200:
  *         description: Appointment status updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Appointment'
  *       400:
- *         description: Invalid input
+ *         description: Invalid status
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Forbidden - Not authorized to update this appointment
+ *         description: Forbidden - Only doctor or patient can update status
  *       404:
  *         description: Appointment not found
  *       500:
@@ -209,60 +265,12 @@ const router = express.Router();
 
 /**
  * @swagger
- * /api/appointments/{id}/reschedule:
- *   post:
+ * /api/v1/appointments/{id}/notes:
+ *   put:
  *     tags:
  *       - Appointments
- *     summary: Reschedule an appointment
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Appointment ID
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - date
- *               - time
- *             properties:
- *               date:
- *                 type: string
- *                 format: date
- *               time:
- *                 type: string
- *                 format: time
- *               reason:
- *                 type: string
- *     responses:
- *       200:
- *         description: Appointment rescheduled successfully
- *       400:
- *         description: Invalid input
- *       401:
- *         description: Unauthorized
- *       403:
- *         description: Forbidden - Not authorized to reschedule this appointment
- *       404:
- *         description: Appointment not found
- *       500:
- *         description: Server error
- */
-
-/**
- * @swagger
- * /api/appointments/{id}/notes:
- *   post:
- *     tags:
- *       - Appointments
- *     summary: Add consultation notes
+ *     summary: Update appointment notes
+ *     description: Add or update doctor's notes for an appointment
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -283,19 +291,20 @@ const router = express.Router();
  *             properties:
  *               notes:
  *                 type: string
- *               diagnosis:
- *                 type: string
- *               prescription:
- *                 type: string
+ *                 description: Doctor's notes about the appointment
  *     responses:
  *       200:
- *         description: Consultation notes added successfully
+ *         description: Appointment notes updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Appointment'
  *       400:
- *         description: Invalid input
+ *         description: Invalid request data
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Forbidden - Not authorized to add notes
+ *         description: Forbidden - Only doctor can update notes
  *       404:
  *         description: Appointment not found
  *       500:
@@ -303,468 +312,320 @@ const router = express.Router();
  */
 
 /**
- * @route POST /api/appointments
+ * @route POST /api/v1/appointments
  * @desc Create a new appointment
  * @access Private
  */
-router.post('/', verifyToken, [
-  body('doctorId').notEmpty().withMessage('Doctor ID is required'),
-  body('scheduledAt').isISO8601().withMessage('Valid appointment date is required'),
-  body('mode').isIn(['video', 'in-person']).withMessage('Valid appointment mode is required'),
-  body('secondOpinion').optional().isBoolean().withMessage('Second opinion must be boolean')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
+router.post('/', 
+  AuthMiddleware.authenticate,
+  [
+    body('doctorId').isMongoId().withMessage('Invalid doctor ID'),
+    body('date').isDate().withMessage('Invalid date format'),
+    body('timeSlot').isString().withMessage('Time slot is required'),
+    body('type').isIn(['in-person', 'video']).withMessage('Invalid appointment type'),
+    body('reason').optional().isString().withMessage('Reason must be a string')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Creating new appointment', {
+        userId: req.user.id,
+        doctorId: req.body.doctorId,
+        type: req.body.type
+      });
+      await AppointmentHandler.createAppointment(req, res);
+    } catch (error) {
+      next(error);
+    }
   }
-
-  try {
-    const { doctorId, scheduledAt, mode, secondOpinion, symptoms, notes } = req.body;
-    
-    // Validate doctor ID
-    if (!mongoose.Types.ObjectId.isValid(doctorId)) {
-      return res.status(400).json({ message: 'Invalid doctor ID format' });
-    }
-    
-    // Check if doctor exists and is verified
-    const doctor = await Doctor.findOne({ 
-      _id: doctorId,
-      verified: true,
-      verificationStatus: 'verified'
-    });
-    
-    if (!doctor) {
-      return res.status(404).json({ message: 'Doctor not found or not verified' });
-    }
-    
-    // Convert scheduled time to Date object
-    const appointmentDate = new Date(scheduledAt);
-    
-    // Calculate end time (default 30 min appointment)
-    const endTime = new Date(appointmentDate);
-    endTime.setMinutes(endTime.getMinutes() + 30);
-    
-    // Check if the time slot is available
-    const isTimeSlotAvailable = await checkTimeSlotAvailability(doctor, appointmentDate);
-    if (!isTimeSlotAvailable) {
-      return res.status(400).json({ message: 'The selected time slot is not available' });
-    }
-    
-    // Create the appointment
-    const appointment = new Appointment({
-      patientId: req.user.id,
-      doctorId: doctor._id,
-      scheduledAt: appointmentDate,
-      endTime,
-      mode,
-      secondOpinion: secondOpinion || false,
-      symptoms: symptoms || [],
-      notes: notes || ''
-    });
-    
-    await appointment.save();
-    
-    // Create a chat room for the appointment
-    const chat = new Chat({
-      appointmentId: appointment._id,
-      participants: [req.user.id, doctor.userId]
-    });
-    
-    await chat.save();
-    
-    // Queue notification jobs
-    await queueJob('appointment-notifications', {
-      jobType: 'appointment-created',
-      appointmentId: appointment._id,
-      patientId: req.user.id,
-      doctorId: doctor._id
-    });
-    
-    res.status(201).json({
-      message: 'Appointment created successfully. Payment required to confirm.',
-      appointment
-    });
-  } catch (error) {
-    console.error('Create appointment error:', error);
-    res.status(500).json({ message: 'Server error while creating appointment' });
-  }
-});
+);
 
 /**
- * @route GET /api/appointments
- * @desc Get all appointments for the logged in user (patient or doctor)
- * @access Private
- */
-router.get('/', verifyToken, async (req, res) => {
-  try {
-    const { status, from, to, page = 1, limit = 10 } = req.query;
-    
-    // Build query based on user role
-    const user = await User.findById(req.user.id);
-    let query = {};
-    
-    if (user.role === 'patient') {
-      query.patientId = req.user.id;
-    } else if (user.role === 'doctor') {
-      const doctor = await Doctor.findOne({ userId: req.user.id });
-      if (!doctor) {
-        return res.status(404).json({ message: 'Doctor profile not found' });
-      }
-      query.doctorId = doctor._id;
-    }
-    
-    // Filter by status if provided
-    if (status && ['pending', 'confirmed', 'cancelled', 'completed', 'no-show'].includes(status)) {
-      query.status = status;
-    }
-    
-    // Filter by date range if provided
-    if (from || to) {
-      query.scheduledAt = {};
-      if (from) query.scheduledAt.$gte = new Date(from);
-      if (to) query.scheduledAt.$lte = new Date(to);
-    }
-    
-    // Calculate pagination
-    const skip = (Number(page) - 1) * Number(limit);
-    
-    // Get appointments with patient/doctor info
-    const appointments = await Appointment.aggregate([
-      { $match: query },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'patientId',
-          foreignField: '_id',
-          as: 'patient'
-        }
-      },
-      {
-        $lookup: {
-          from: 'doctors',
-          localField: 'doctorId',
-          foreignField: '_id',
-          as: 'doctor'
-        }
-      },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'doctor.userId',
-          foreignField: '_id',
-          as: 'doctorUser'
-        }
-      },
-      { $unwind: '$patient' },
-      { $unwind: '$doctor' },
-      { $unwind: '$doctorUser' },
-      {
-        $project: {
-          _id: 1,
-          scheduledAt: 1,
-          endTime: 1,
-          status: 1,
-          paymentStatus: 1,
-          mode: 1,
-          secondOpinion: 1,
-          symptoms: 1,
-          notes: 1,
-          createdAt: 1,
-          'patient._id': 1,
-          'patient.firstName': 1,
-          'patient.lastName': 1,
-          'patient.avatarUrl': 1,
-          'doctor._id': 1,
-          'doctor.specialties': 1,
-          'doctor.consultationFee': 1,
-          'doctorUser.firstName': 1,
-          'doctorUser.lastName': 1,
-          'doctorUser.avatarUrl': 1
-        }
-      },
-      { $sort: { scheduledAt: -1 } },
-      { $skip: skip },
-      { $limit: Number(limit) }
-    ]);
-    
-    // Get total count for pagination
-    const totalAppointments = await Appointment.countDocuments(query);
-    
-    res.json({
-      appointments,
-      page: Number(page),
-      limit: Number(limit),
-      totalPages: Math.ceil(totalAppointments / Number(limit)),
-      totalAppointments
-    });
-  } catch (error) {
-    console.error('Get appointments error:', error);
-    res.status(500).json({ message: 'Server error while fetching appointments' });
-  }
-});
-
-/**
- * @route GET /api/appointments/:id
+ * @route GET /api/v1/appointments/:id
  * @desc Get appointment by ID
  * @access Private
  */
-router.get('/:id', verifyToken, async (req, res) => {
-  try {
-    const appointmentId = req.params.id;
-    
-    // Validate ID format
-    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
-      return res.status(400).json({ message: 'Invalid appointment ID format' });
+router.get('/:id', 
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching appointment details', {
+        userId: req.user.id,
+        appointmentId: req.params.id
+      });
+      await AppointmentHandler.getAppointment(req, res);
+    } catch (error) {
+      next(error);
     }
-    
-    // Get appointment with related info
-    const appointment = await Appointment.aggregate([
-      { $match: { _id: mongoose.Types.ObjectId(appointmentId) } },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'patientId',
-          foreignField: '_id',
-          as: 'patient'
-        }
-      },
-      {
-        $lookup: {
-          from: 'doctors',
-          localField: 'doctorId',
-          foreignField: '_id',
-          as: 'doctor'
-        }
-      },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'doctor.userId',
-          foreignField: '_id',
-          as: 'doctorUser'
-        }
-      },
-      {
-        $lookup: {
-          from: 'payments',
-          localField: '_id',
-          foreignField: 'appointmentId',
-          as: 'payment'
-        }
-      },
-      { $unwind: '$patient' },
-      { $unwind: '$doctor' },
-      { $unwind: '$doctorUser' },
-      {
-        $project: {
-          _id: 1,
-          scheduledAt: 1,
-          endTime: 1,
-          status: 1,
-          paymentStatus: 1,
-          mode: 1,
-          secondOpinion: 1,
-          symptoms: 1,
-          notes: 1,
-          createdAt: 1,
-          'patient._id': 1,
-          'patient.firstName': 1,
-          'patient.lastName': 1,
-          'patient.avatarUrl': 1,
-          'patient.email': 1,
-          'patient.phone': 1,
-          'doctor._id': 1,
-          'doctor.specialties': 1,
-          'doctor.consultationFee': 1,
-          'doctor.bio': 1,
-          'doctorUser.firstName': 1,
-          'doctorUser.lastName': 1,
-          'doctorUser.avatarUrl': 1,
-          'doctorUser.email': 1,
-          payment: { $arrayElemAt: ['$payment', 0] }
-        }
-      }
-    ]);
-    
-    if (!appointment || appointment.length === 0) {
-      return res.status(404).json({ message: 'Appointment not found' });
-    }
-    
-    // Check if user has access to this appointment
-    const user = await User.findById(req.user.id);
-    
-    if (user.role === 'patient' && appointment[0].patient._id.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Access denied: Not your appointment' });
-    } else if (user.role === 'doctor') {
-      const doctor = await Doctor.findOne({ userId: req.user.id });
-      if (!doctor || appointment[0].doctor._id.toString() !== doctor._id.toString()) {
-        return res.status(403).json({ message: 'Access denied: Not your patient' });
-      }
-    }
-    
-    // Get video session if exists and appointment is upcoming
-    if (appointment[0].mode === 'video' && appointment[0].status === 'confirmed') {
-      const now = new Date();
-      const appointmentTime = new Date(appointment[0].scheduledAt);
-      const timeDiff = (appointmentTime - now) / (1000 * 60); // difference in minutes
-      
-      if (timeDiff <= 15 && timeDiff >= -30) {
-        // Within the allowed window (15 min before to 30 min after)
-        const videoSession = await VideoSession.findOne({ appointmentId: appointmentId });
-        if (videoSession) {
-          appointment[0].videoSession = {
-            id: videoSession._id,
-            roomId: videoSession.roomId,
-            status: videoSession.status
-          };
-        }
-      }
-    }
-    
-    res.json(appointment[0]);
-  } catch (error) {
-    console.error('Get appointment error:', error);
-    res.status(500).json({ message: 'Server error while fetching appointment details' });
   }
-});
+);
 
 /**
- * @route PUT /api/appointments/:id/status
+ * @route PUT /api/v1/appointments/:id/status
  * @desc Update appointment status
  * @access Private
  */
-router.put('/:id/status', verifyToken, [
-  body('status').isIn(['confirmed', 'cancelled', 'completed', 'no-show']).withMessage('Invalid status value')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
+router.put('/:id/status', 
+  AuthMiddleware.authenticate,
+  [
+    body('status').isIn(['pending', 'confirmed', 'cancelled', 'completed'])
+      .withMessage('Invalid appointment status')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Updating appointment status', {
+        userId: req.user.id,
+        appointmentId: req.params.id,
+        newStatus: req.body.status
+      });
+      await AppointmentHandler.updateAppointmentStatus(req, res);
+    } catch (error) {
+      next(error);
+    }
   }
-
-  try {
-    const appointmentId = req.params.id;
-    const { status } = req.body;
-    
-    // Validate ID format
-    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
-      return res.status(400).json({ message: 'Invalid appointment ID format' });
-    }
-    
-    // Find the appointment
-    const appointment = await Appointment.findById(appointmentId);
-    if (!appointment) {
-      return res.status(404).json({ message: 'Appointment not found' });
-    }
-    
-    // Check authorization
-    const user = await User.findById(req.user.id);
-    if (user.role === 'patient' && appointment.patientId.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Access denied: Not your appointment' });
-    } else if (user.role === 'doctor') {
-      const doctor = await Doctor.findOne({ userId: req.user.id });
-      if (!doctor || appointment.doctorId.toString() !== doctor._id.toString()) {
-        return res.status(403).json({ message: 'Access denied: Not your patient' });
-      }
-    }
-    
-    // Apply validations based on current status and user role
-    if (status === 'cancelled') {
-      // Only allow cancellation if status is pending or confirmed
-      if (!['pending', 'confirmed'].includes(appointment.status)) {
-        return res.status(400).json({
-          message: `Cannot cancel an appointment that is already ${appointment.status}`
-        });
-      }
-    } else if (status === 'completed' || status === 'no-show') {
-      // Only doctors can mark as completed or no-show
-      if (user.role !== 'doctor') {
-        return res.status(403).json({
-          message: `Only doctors can mark appointments as ${status}`
-        });
-      }
-      // Can only mark confirmed appointments
-      if (appointment.status !== 'confirmed') {
-        return res.status(400).json({
-          message: `Cannot mark as ${status} when status is ${appointment.status}`
-        });
-      }
-    }
-    
-    // Update the status
-    appointment.status = status;
-    appointment.updatedAt = Date.now();
-    
-    await appointment.save();
-    
-    // Queue notification for status update
-    await queueJob('appointment-notifications', {
-      jobType: 'appointment-status-changed',
-      appointmentId: appointment._id,
-      patientId: appointment.patientId,
-      doctorId: appointment.doctorId,
-      status
-    });
-    
-    res.json({
-      message: `Appointment status updated to ${status}`,
-      appointment
-    });
-  } catch (error) {
-    console.error('Update appointment status error:', error);
-    res.status(500).json({ message: 'Server error while updating appointment status' });
-  }
-});
+);
 
 /**
- * @route PUT /api/appointments/:id/notes
+ * @route PUT /api/v1/appointments/:id/notes
  * @desc Update appointment notes (doctor only)
  * @access Private (Doctor only)
  */
-router.put('/:id/notes', verifyToken, isDoctor, [
-  body('notes').notEmpty().withMessage('Notes cannot be empty')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const appointmentId = req.params.id;
-    const { notes } = req.body;
-    
-    // Find the doctor profile
-    const doctor = await Doctor.findOne({ userId: req.user.id });
-    if (!doctor) {
-      return res.status(404).json({ message: 'Doctor profile not found' });
-    }
-    
-    // Find the appointment
-    const appointment = await Appointment.findOne({
-      _id: appointmentId,
-      doctorId: doctor._id
-    });
-    
-    if (!appointment) {
-      return res.status(404).json({
-        message: 'Appointment not found or you do not have permission'
+router.put('/:id/notes', 
+  AuthMiddleware.authenticate,
+  AuthMiddleware.authorize(['doctor']),
+  [
+    body('notes').isString().withMessage('Notes must be a string')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Updating appointment notes', {
+        userId: req.user.id,
+        appointmentId: req.params.id
       });
+      await AppointmentHandler.updateAppointmentNotes(req, res);
+    } catch (error) {
+      next(error);
     }
-    
-    // Update notes
-    appointment.notes = notes;
-    appointment.updatedAt = Date.now();
-    
-    await appointment.save();
-    
-    res.json({
-      message: 'Appointment notes updated successfully',
-      appointment
-    });
-  } catch (error) {
-    console.error('Update appointment notes error:', error);
-    res.status(500).json({ message: 'Server error while updating appointment notes' });
   }
-});
+);
+
+/**
+ * @route GET /api/v1/appointments
+ * @desc Get all appointments for the logged in user (patient or doctor)
+ * @access Private
+ */
+router.get('/', 
+  AuthMiddleware.authenticate,
+  AppointmentHandler.getAppointments
+);
+
+/**
+ * @swagger
+ * /api/v1/appointments/available-slots:
+ *   get:
+ *     tags:
+ *       - Appointments
+ *     summary: Get available time slots
+ *     description: Get available time slots for a specific doctor and date
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: doctorId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Doctor ID
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Date to check availability (YYYY-MM-DD)
+ *     responses:
+ *       200:
+ *         description: Available slots retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 slots:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                     description: Available time slot
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Doctor not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/available-slots',
+  AuthMiddleware.authenticate,
+  [
+    query('doctorId').isMongoId().withMessage('Invalid doctor ID'),
+    query('date').isDate().withMessage('Invalid date format')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching available slots', {
+        userId: req.user.id,
+        doctorId: req.query.doctorId,
+        date: req.query.date
+      });
+      await AppointmentHandler.getAvailableSlots(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/appointments/{id}/reschedule:
+ *   put:
+ *     tags:
+ *       - Appointments
+ *     summary: Reschedule an appointment
+ *     description: Reschedule an existing appointment to a new date and time
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Appointment ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - date
+ *               - timeSlot
+ *             properties:
+ *               date:
+ *                 type: string
+ *                 format: date
+ *                 description: New appointment date (YYYY-MM-DD)
+ *               timeSlot:
+ *                 type: string
+ *                 description: New time slot
+ *     responses:
+ *       200:
+ *         description: Appointment rescheduled successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Appointment'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to reschedule
+ *       404:
+ *         description: Appointment not found
+ *       409:
+ *         description: Time slot not available
+ *       500:
+ *         description: Server error
+ */
+router.put('/:id/reschedule',
+  AuthMiddleware.authenticate,
+  [
+    body('date').isDate().withMessage('Invalid date format'),
+    body('timeSlot').isString().withMessage('Time slot is required')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Rescheduling appointment', {
+        userId: req.user.id,
+        appointmentId: req.params.id,
+        newDate: req.body.date,
+        newTimeSlot: req.body.timeSlot
+      });
+      await AppointmentHandler.rescheduleAppointment(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/appointments/{id}/cancel:
+ *   put:
+ *     tags:
+ *       - Appointments
+ *     summary: Cancel an appointment
+ *     description: Cancel an existing appointment
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Appointment ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reason
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Reason for cancellation
+ *     responses:
+ *       200:
+ *         description: Appointment cancelled successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Appointment'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to cancel
+ *       404:
+ *         description: Appointment not found
+ *       409:
+ *         description: Appointment cannot be cancelled
+ *       500:
+ *         description: Server error
+ */
+router.put('/:id/cancel',
+  AuthMiddleware.authenticate,
+  [
+    body('reason').isString().withMessage('Cancellation reason is required')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Cancelling appointment', {
+        userId: req.user.id,
+        appointmentId: req.params.id,
+        reason: req.body.reason
+      });
+      await AppointmentHandler.cancelAppointment(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 // Helper function to check time slot availability
 async function checkTimeSlotAvailability(doctor, appointmentTime) {

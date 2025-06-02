@@ -1,63 +1,58 @@
-
 const mongoose = require('mongoose');
 
 const appointmentSchema = new mongoose.Schema({
-  patientId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
   doctorId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Doctor',
     required: true
   },
-  scheduledAt: {
+  patientId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  date: {
     type: Date,
     required: true
   },
+  startTime: {
+    type: String,
+    required: true
+  },
   endTime: {
-    type: Date,
+    type: String,
     required: true
   },
   status: {
     type: String,
-    enum: ['pending', 'confirmed', 'cancelled', 'completed', 'no-show'],
+    enum: ['pending', 'confirmed', 'cancelled', 'completed'],
     default: 'pending'
   },
-  paymentStatus: {
+  type: {
     type: String,
-    enum: ['pending', 'paid', 'refunded', 'failed'],
-    default: 'pending'
+    enum: ['in-person', 'video', 'phone'],
+    required: true
   },
-  paymentId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Payment'
-  },
-  mode: {
+  reason: {
     type: String,
-    enum: ['video', 'in-person'],
-    default: 'video'
+    required: true
   },
-  secondOpinion: {
+  notes: String,
+  cancellationReason: String,
+  cancellationTime: Date,
+  reminderSent: {
     type: Boolean,
     default: false
-  },
-  symptoms: {
-    type: [String],
-    default: []
-  },
-  notes: {
-    type: String
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
   }
+}, {
+  timestamps: true
 });
 
-module.exports = mongoose.model('Appointment', appointmentSchema);
+// Index for faster queries
+appointmentSchema.index({ doctorId: 1, date: 1 });
+appointmentSchema.index({ patientId: 1, date: 1 });
+appointmentSchema.index({ status: 1 });
+
+const Appointment = mongoose.model('Appointment', appointmentSchema);
+
+module.exports = Appointment;

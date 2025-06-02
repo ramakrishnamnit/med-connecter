@@ -5,7 +5,8 @@ const User = require('../models/user.model');
 const Doctor = require('../models/doctor.model');
 const Appointment = require('../models/appointment.model');
 const Payment = require('../models/payment.model');
-const { verifyToken, isAdmin } = require('../middleware/auth.middleware');
+const AuthMiddleware = require('../middleware/auth.middleware');
+const AdminHandler = require('../handlers/admin.handler');
 
 const router = express.Router();
 
@@ -39,11 +40,19 @@ const router = express.Router();
  *           type: array
  *           items:
  *             $ref: '#/components/schemas/Doctor'
+ *     DoctorVerification:
+ *       type: object
+ *       properties:
+ *         status:
+ *           type: string
+ *           enum: [pending, approved, rejected]
+ *         comments:
+ *           type: string
  */
 
 /**
  * @swagger
- * /api/admin/stats:
+ * /api/v1/admin/stats:
  *   get:
  *     tags:
  *       - Admin
@@ -119,7 +128,7 @@ const router = express.Router();
 
 /**
  * @swagger
- * /api/admin/users/{id}:
+ * /api/v1/admin/users/{id}:
  *   get:
  *     tags:
  *       - Admin
@@ -152,7 +161,7 @@ const router = express.Router();
 
 /**
  * @swagger
- * /api/admin/users/{id}:
+ * /api/v1/admin/users/{id}:
  *   put:
  *     tags:
  *       - Admin
@@ -195,25 +204,31 @@ const router = express.Router();
 
 /**
  * @swagger
- * /api/admin/doctors:
+ * /api/v1/admin/doctors:
  *   get:
  *     tags:
  *       - Admin
- *     summary: Get all doctors
+ *     summary: Get all doctors with filter options
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: query
- *         name: status
+ *         name: verificationStatus
  *         schema:
  *           type: string
  *           enum: [pending, verified, rejected]
  *         description: Filter by verification status
  *       - in: query
- *         name: specialty
+ *         name: status
  *         schema:
  *           type: string
- *         description: Filter by specialty
+ *           enum: [pending, active, inactive, suspended]
+ *         description: Filter by account status
+ *       - in: query
+ *         name: specialization
+ *         schema:
+ *           type: string
+ *         description: Filter by specialization
  *       - in: query
  *         name: page
  *         schema:
@@ -228,16 +243,27 @@ const router = express.Router();
  *         description: Number of items per page
  *     responses:
  *       200:
- *         description: Doctors retrieved successfully
+ *         description: List of doctors retrieved successfully
  *         content:
  *           application/json:
  *             schema:
  *               type: object
  *               properties:
+ *                 success:
+ *                   type: boolean
  *                 doctors:
  *                   type: array
  *                   items:
- *                     $ref: '#/definitions/Doctor'
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       verificationStatus:
+ *                         type: string
+ *                         enum: [pending, verified, rejected]
+ *                       status:
+ *                         type: string
+ *                         enum: [pending, active, inactive, suspended]
  *                 total:
  *                   type: integer
  *                 page:
@@ -251,14 +277,98 @@ const router = express.Router();
  *       500:
  *         description: Server error
  */
+router.get('/doctors',
+  AuthMiddleware.authenticate,
+  AuthMiddleware.authorize(['admin']),
+  async (req, res) => {
+    try {
+      const { verificationStatus, status, specialization, page = 1, limit = 10 } = req.query;
+      const query = {};
+
+      if (verificationStatus) {
+        query.verificationStatus = verificationStatus;
+      }
+
+      if (status) {
+        query.status = status;
+      }
+
+      if (specialization) {
+        query.specializations = specialization;
+      }
+
+      const doctors = await Doctor.find(query)
+        .populate('userId', 'firstName lastName email')
+        .skip((page - 1) * limit)
+        .limit(Number(limit))
+        .sort({ createdAt: -1 });
+
+      const total = await Doctor.countDocuments(query);
+
+      res.json({
+        success: true,
+        doctors,
+        total,
+        page: Number(page),
+        pages: Math.ceil(total / limit)
+      });
+    } catch (error) {
+      logger.error('Admin get doctors error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch doctors'
+      });
+    }
+  }
+);
 
 /**
  * @swagger
- * /api/admin/doctors/{id}/verify:
+ * /api/v1/admin/doctors/{id}:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: Get a specific doctor's details
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Doctor details retrieved successfully
+ */
+router.get('/doctors/:id', 
+  AuthMiddleware.authenticate, 
+  AuthMiddleware.authorize(['admin']), 
+  async (req, res) => {
+    try {
+      const doctor = await Doctor.findById(req.params.id)
+        .populate('userId', 'firstName lastName email');
+        
+      if (!doctor) {
+        return res.status(404).json({ message: 'Doctor not found' });
+      }
+      
+      res.json(doctor);
+    } catch (error) {
+      console.error('Admin get doctor error:', error);
+      res.status(500).json({ message: 'Server error retrieving doctor details' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/admin/doctors/{id}/verify:
  *   post:
  *     tags:
  *       - Admin
  *     summary: Verify a doctor
+ *     description: Update a doctor's account status
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -279,14 +389,33 @@ const router = express.Router();
  *             properties:
  *               status:
  *                 type: string
- *                 enum: [verified, rejected]
- *               notes:
+ *                 enum: [pending, active, inactive, suspended]
+ *                 description: Doctor's account status
+ *               rejectionReason:
  *                 type: string
+ *                 description: Reason for rejection if status is suspended
  *     responses:
  *       200:
- *         description: Doctor verification status updated successfully
+ *         description: Doctor status updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 doctor:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                     status:
+ *                       type: string
+ *                       enum: [pending, active, inactive, suspended]
  *       400:
- *         description: Invalid input
+ *         description: Invalid request data
  *       401:
  *         description: Unauthorized
  *       403:
@@ -296,243 +425,87 @@ const router = express.Router();
  *       500:
  *         description: Server error
  */
+router.post('/doctors/:id/verify',
+  AuthMiddleware.authenticate,
+  AuthMiddleware.authorize(['admin']),
+  [
+    body('status').isIn(['pending', 'active', 'inactive', 'suspended']).withMessage('Invalid status'),
+    body('rejectionReason').optional().isString().withMessage('Rejection reason must be a string')
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { status, rejectionReason } = req.body;
+      const doctor = await Doctor.findById(req.params.id);
+
+      if (!doctor) {
+        return res.status(404).json({
+          success: false,
+          error: 'Doctor not found'
+        });
+      }
+
+      // Validate rejection reason is provided when suspending
+      if (status === 'suspended' && !rejectionReason) {
+        return res.status(400).json({
+          success: false,
+          error: 'Rejection reason is required when suspending a doctor'
+        });
+      }
+
+      doctor.status = status;
+      if (status === 'suspended') {
+        doctor.rejectionReason = rejectionReason;
+      }
+
+      await doctor.save();
+
+      // TODO: Send notification to doctor about status change
+
+      res.json({
+        success: true,
+        message: 'Doctor status updated successfully',
+        doctor: {
+          id: doctor._id,
+          status: doctor.status
+        }
+      });
+    } catch (error) {
+      logger.error('Admin verify doctor error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to update doctor status'
+      });
+    }
+  }
+);
 
 /**
  * @swagger
- * /api/admin/reports:
+ * /api/v1/admin/dashboard:
  *   get:
  *     tags:
  *       - Admin
- *     summary: Get system reports
+ *     summary: Get admin dashboard statistics
  *     security:
  *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: type
- *         schema:
- *           type: string
- *           enum: [users, appointments, payments, reviews]
- *         description: Report type
- *       - in: query
- *         name: startDate
- *         schema:
- *           type: string
- *           format: date
- *         description: Start date for report
- *       - in: query
- *         name: endDate
- *         schema:
- *           type: string
- *           format: date
- *         description: End date for report
  *     responses:
  *       200:
- *         description: Reports retrieved successfully
+ *         description: Admin statistics retrieved successfully
  *         content:
  *           application/json:
  *             schema:
- *               type: object
- *               properties:
- *                 data:
- *                   type: object
- *                 summary:
- *                   type: object
+ *               $ref: '#/components/schemas/AdminStats'
  *       401:
  *         description: Unauthorized
  *       403:
  *         description: Forbidden - Admin access required
  *       500:
  *         description: Server error
- */
-
-/**
- * @route GET /api/admin/doctors
- * @desc Get all doctors with filter options
- * @access Private (Admin only)
- */
-router.get('/doctors', async (req, res) => {
-  try {
-    const { 
-      verificationStatus, 
-      specialty, 
-      name,
-      page = 1, 
-      limit = 10 
-    } = req.query;
-    
-    // Build query for doctors
-    let doctorQuery = {};
-    
-    // Filter by verification status
-    if (verificationStatus && ['pending', 'verified', 'rejected'].includes(verificationStatus)) {
-      doctorQuery.verificationStatus = verificationStatus;
-    }
-    
-    // Filter by specialty
-    if (specialty) {
-      doctorQuery.specialties = { $in: specialty.split(',') };
-    }
-    
-    // If name is provided, first find matching users
-    let userIds = [];
-    if (name) {
-      const nameRegex = new RegExp(name, 'i');
-      const users = await User.find({
-        $or: [
-          { firstName: nameRegex },
-          { lastName: nameRegex }
-        ],
-        role: 'doctor'
-      }).select('_id');
-      
-      userIds = users.map(u => u._id);
-      doctorQuery.userId = { $in: userIds };
-    }
-    
-    // Calculate pagination
-    const skip = (Number(page) - 1) * Number(limit);
-    
-    // Get doctors with user details
-    const doctors = await Doctor.aggregate([
-      { $match: doctorQuery },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'userId',
-          foreignField: '_id',
-          as: 'user'
-        }
-      },
-      { $unwind: '$user' },
-      {
-        $project: {
-          _id: 1,
-          userId: 1,
-          specialties: 1,
-          bio: 1,
-          licenseNumber: 1,
-          verified: 1,
-          verificationStatus: 1,
-          consultationFee: 1,
-          experience: 1,
-          education: 1,
-          createdAt: 1,
-          'user.firstName': 1,
-          'user.lastName': 1,
-          'user.email': 1,
-          'user.phone': 1,
-          'user.avatarUrl': 1
-        }
-      },
-      { $sort: { createdAt: -1 } },
-      { $skip: skip },
-      { $limit: Number(limit) }
-    ]);
-    
-    // Get total count
-    const totalDoctors = await Doctor.countDocuments(doctorQuery);
-    
-    res.json({
-      doctors,
-      page: Number(page),
-      limit: Number(limit),
-      totalPages: Math.ceil(totalDoctors / Number(limit)),
-      totalDoctors
-    });
-  } catch (error) {
-    console.error('Admin get doctors error:', error);
-    res.status(500).json({ message: 'Server error retrieving doctors' });
-  }
-});
-
-/**
- * @route GET /api/admin/doctors/:id
- * @desc Get specific doctor details
- * @access Private (Admin only)
- */
-router.get('/doctors/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    // Validate doctor ID
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: 'Invalid doctor ID format' });
-    }
-    
-    // Get doctor with user details
-    const doctor = await Doctor.findById(id).populate('userId', 'firstName lastName email phone avatarUrl');
-    
-    if (!doctor) {
-      return res.status(404).json({ message: 'Doctor not found' });
-    }
-    
-    res.json(doctor);
-  } catch (error) {
-    console.error('Admin get doctor error:', error);
-    res.status(500).json({ message: 'Server error retrieving doctor details' });
-  }
-});
-
-/**
- * @route PUT /api/admin/doctors/:id/verify
- * @desc Verify a doctor
- * @access Private (Admin only)
- */
-router.put('/doctors/:id/verify', [
-  body('status').isIn(['verified', 'rejected']).withMessage('Status must be either verified or rejected'),
-  body('notes').optional().isString().withMessage('Notes must be a string')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const { id } = req.params;
-    const { status, notes } = req.body;
-    
-    // Validate doctor ID
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: 'Invalid doctor ID format' });
-    }
-    
-    // Find the doctor
-    const doctor = await Doctor.findById(id);
-    if (!doctor) {
-      return res.status(404).json({ message: 'Doctor not found' });
-    }
-    
-    // Update verification status
-    doctor.verificationStatus = status;
-    doctor.verified = status === 'verified';
-    doctor.verificationNotes = notes;
-    doctor.updatedAt = Date.now();
-    
-    await doctor.save();
-    
-    // Get the user for notification
-    const user = await User.findById(doctor.userId);
-    
-    // Send notification about verification status
-    if (user) {
-      // In production, we would send email/notification here
-      console.log(`Doctor ${user.firstName} ${user.lastName} (${user.email}) verification status updated to ${status}`);
-    }
-    
-    res.json({
-      message: `Doctor verification status updated to ${status}`,
-      doctor
-    });
-  } catch (error) {
-    console.error('Admin verify doctor error:', error);
-    res.status(500).json({ message: 'Server error updating doctor verification' });
-  }
-});
-
-/**
- * @route GET /api/admin/dashboard
- * @desc Get admin dashboard statistics
- * @access Private (Admin only)
  */
 router.get('/dashboard', async (req, res) => {
   try {
@@ -611,9 +584,67 @@ router.get('/dashboard', async (req, res) => {
 });
 
 /**
- * @route GET /api/admin/appointments
- * @desc Get all appointments with filter options
- * @access Private (Admin only)
+ * @swagger
+ * /api/v1/admin/appointments:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: Get all appointments with filter options
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [pending, confirmed, cancelled, completed, no-show]
+ *         description: Filter by appointment status
+ *       - in: query
+ *         name: from
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Start date for appointment
+ *       - in: query
+ *         name: to
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: End date for appointment
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Number of items per page
+ *     responses:
+ *       200:
+ *         description: Appointments retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 appointments:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/definitions/Appointment'
+ *                 totalPages:
+ *                   type: integer
+ *                 totalAppointments:
+ *                   type: integer
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin access required
+ *       500:
+ *         description: Server error
  */
 router.get('/appointments', async (req, res) => {
   try {
@@ -725,9 +756,54 @@ router.get('/appointments', async (req, res) => {
 });
 
 /**
- * @route GET /api/admin/patients
- * @desc Get all patients
- * @access Private (Admin only)
+ * @swagger
+ * /api/v1/admin/patients:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: Get all patients
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Number of items per page
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Search term for patient name or email
+ *     responses:
+ *       200:
+ *         description: List of patients retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 patients:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/definitions/User'
+ *                 totalPages:
+ *                   type: integer
+ *                 totalPatients:
+ *                   type: integer
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin access required
+ *       500:
+ *         description: Server error
  */
 router.get('/patients', async (req, res) => {
   try {
@@ -771,5 +847,299 @@ router.get('/patients', async (req, res) => {
     res.status(500).json({ message: 'Server error retrieving patients' });
   }
 });
+
+/**
+ * @swagger
+ * /api/v1/admin/users:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: Get all users with optional filtering
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: role
+ *         schema:
+ *           type: string
+ *           enum: [patient, doctor, admin]
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: List of users retrieved successfully
+ */
+router.get('/users', 
+  AuthMiddleware.authenticate, 
+  AuthMiddleware.authorize(['admin']), 
+  async (req, res) => {
+    try {
+      const { role, status, page = 1, limit = 10 } = req.query;
+      const query = {};
+      
+      if (role) {
+        query.role = role;
+      }
+      
+      if (status) {
+        query.status = status;
+      }
+      
+      const users = await User.find(query)
+        .select('-password')
+        .skip((page - 1) * limit)
+        .limit(Number(limit))
+        .sort({ createdAt: -1 });
+        
+      const total = await User.countDocuments(query);
+      
+      res.json({
+        users,
+        page: Number(page),
+        limit: Number(limit),
+        totalPages: Math.ceil(total / limit),
+        total
+      });
+    } catch (error) {
+      console.error('Admin get users error:', error);
+      res.status(500).json({ message: 'Server error retrieving users' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/admin/users/{id}:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: Get a specific user's details
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: User details retrieved successfully
+ */
+router.get('/users/:id', 
+  AuthMiddleware.authenticate, 
+  AuthMiddleware.authorize(['admin']), 
+  async (req, res) => {
+    try {
+      const user = await User.findById(req.params.id).select('-password');
+      
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+      
+      res.json(user);
+    } catch (error) {
+      console.error('Admin get user error:', error);
+      res.status(500).json({ message: 'Server error retrieving user details' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/admin/users/{id}/status:
+ *   put:
+ *     tags:
+ *       - Admin
+ *     summary: Update a user's status
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - status
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 enum: [active, inactive, suspended]
+ *     responses:
+ *       200:
+ *         description: User status updated successfully
+ */
+router.put('/users/:id/status', 
+  AuthMiddleware.authenticate, 
+  AuthMiddleware.authorize(['admin']),
+  [
+    body('status').isIn(['active', 'inactive', 'suspended']).withMessage('Invalid status')
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+      
+      const { status } = req.body;
+      const user = await User.findById(req.params.id);
+      
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+      
+      user.status = status;
+      await user.save();
+      
+      res.json({ message: 'User status updated successfully', user });
+    } catch (error) {
+      console.error('Admin update user status error:', error);
+      res.status(500).json({ message: 'Server error updating user status' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/admin/reviews:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: Get all reviews with optional filtering
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [pending, approved, rejected]
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: List of reviews retrieved successfully
+ */
+router.get('/reviews', 
+  AuthMiddleware.authenticate, 
+  AuthMiddleware.authorize(['admin']), 
+  async (req, res) => {
+    try {
+      const { status, page = 1, limit = 10 } = req.query;
+      const query = {};
+      
+      if (status) {
+        query.status = status;
+      }
+      
+      const reviews = await Review.find(query)
+        .populate('userId', 'firstName lastName')
+        .populate('doctorId', 'userId')
+        .populate('doctorId.userId', 'firstName lastName')
+        .skip((page - 1) * limit)
+        .limit(Number(limit))
+        .sort({ createdAt: -1 });
+        
+      const total = await Review.countDocuments(query);
+      
+      res.json({
+        reviews,
+        page: Number(page),
+        limit: Number(limit),
+        totalPages: Math.ceil(total / limit),
+        total
+      });
+    } catch (error) {
+      console.error('Admin get reviews error:', error);
+      res.status(500).json({ message: 'Server error retrieving reviews' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/admin/reviews/{id}:
+ *   put:
+ *     tags:
+ *       - Admin
+ *     summary: Update a review's status
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - status
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 enum: [pending, approved, rejected]
+ *     responses:
+ *       200:
+ *         description: Review status updated successfully
+ */
+router.put('/reviews/:id', 
+  AuthMiddleware.authenticate, 
+  AuthMiddleware.authorize(['admin']),
+  [
+    body('status').isIn(['pending', 'approved', 'rejected']).withMessage('Invalid status')
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+      
+      const { status } = req.body;
+      const review = await Review.findById(req.params.id);
+      
+      if (!review) {
+        return res.status(404).json({ message: 'Review not found' });
+      }
+      
+      review.status = status;
+      await review.save();
+      
+      res.json({ message: 'Review status updated successfully', review });
+    } catch (error) {
+      console.error('Admin update review status error:', error);
+      res.status(500).json({ message: 'Server error updating review status' });
+    }
+  }
+);
 
 module.exports = router;

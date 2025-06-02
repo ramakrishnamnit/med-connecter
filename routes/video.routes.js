@@ -1,8 +1,57 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const { verifyToken } = require('../middleware/auth.middleware');
+const mongoose = require('mongoose');
+const VideoSession = require('../models/video.model');
+const Appointment = require('../models/appointment.model');
+const AuthMiddleware = require('../middleware/auth.middleware');
+const VideoHandler = require('../handlers/video.handler');
 const videoService = require('../services/video.service');
+const logger = require('../utils/logger');
 const router = express.Router();
+
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     VideoSession:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: The video session ID
+ *         appointmentId:
+ *           type: string
+ *           description: Associated appointment ID
+ *         doctorId:
+ *           type: string
+ *           description: ID of the doctor
+ *         patientId:
+ *           type: string
+ *           description: ID of the patient
+ *         status:
+ *           type: string
+ *           enum: [scheduled, active, ended]
+ *           description: Current status of the session
+ *         startTime:
+ *           type: string
+ *           format: date-time
+ *           description: When the session started
+ *         endTime:
+ *           type: string
+ *           format: date-time
+ *           description: When the session ended
+ *         recordingUrl:
+ *           type: string
+ *           description: URL to the session recording (if available)
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the session was created
+ *         updatedAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the session was last updated
+ */
 
 /**
  * @swagger
@@ -13,11 +62,12 @@ const router = express.Router();
 
 /**
  * @swagger
- * /api/video/sessions:
+ * /api/v1/video/sessions:
  *   get:
  *     tags:
  *       - Video
  *     summary: Get user's video sessions
+ *     description: Retrieve all video sessions for the authenticated user
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -25,7 +75,7 @@ const router = express.Router();
  *         name: status
  *         schema:
  *           type: string
- *           enum: [scheduled, active, completed, cancelled]
+ *           enum: [scheduled, active, ended]
  *         description: Filter by session status
  *       - in: query
  *         name: page
@@ -50,7 +100,7 @@ const router = express.Router();
  *                 sessions:
  *                   type: array
  *                   items:
- *                     $ref: '#/definitions/VideoSession'
+ *                     $ref: '#/components/schemas/VideoSession'
  *                 total:
  *                   type: integer
  *                 page:
@@ -62,6 +112,78 @@ const router = express.Router();
  *       500:
  *         description: Server error
  */
+router.get('/sessions',
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching video sessions', {
+        userId: req.user.id,
+        query: req.query
+      });
+      await VideoHandler.getSessions(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/video/sessions:
+ *   post:
+ *     tags:
+ *       - Video
+ *     summary: Create a new video session
+ *     description: Create a new video consultation session for an appointment
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - appointmentId
+ *             properties:
+ *               appointmentId:
+ *                 type: string
+ *                 description: ID of the associated appointment
+ *     responses:
+ *       201:
+ *         description: Video session created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/VideoSession'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Appointment not found
+ *       409:
+ *         description: Video session already exists for this appointment
+ *       500:
+ *         description: Server error
+ */
+router.post('/sessions',
+  AuthMiddleware.authenticate,
+  [
+    body('appointmentId').isMongoId().withMessage('Invalid appointment ID')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Creating video session', {
+        userId: req.user.id,
+        appointmentId: req.body.appointmentId
+      });
+      await VideoHandler.createSession(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /**
  * @swagger
@@ -203,79 +325,312 @@ const router = express.Router();
  * @desc Create a new video session
  * @access Private
  */
-router.post('/session', verifyToken, [
-  body('doctorId').notEmpty().withMessage('Doctor ID is required'),
-  body('patientId').notEmpty().withMessage('Patient ID is required'),
-  body('scheduledAt').isISO8601().withMessage('Valid scheduled time is required')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+router.post('/session', 
+  AuthMiddleware.authenticate,
+  [
+    body('appointmentId').isMongoId().withMessage('Invalid appointment ID')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Creating video session', {
+        userId: req.user.id,
+        appointmentId: req.body.appointmentId
+      });
+      await VideoHandler.createSession(req, res);
+    } catch (error) {
+      next(error);
     }
-
-    const { doctorId, patientId, scheduledAt } = req.body;
-    const session = await videoService.createVideoSession(doctorId, patientId, new Date(scheduledAt));
-
-    res.status(201).json({
-      message: 'Video session created successfully',
-      session
-    });
-  } catch (error) {
-    console.error('Create video session error:', error);
-    res.status(500).json({ 
-      message: 'Error creating video session',
-      error: error.message
-    });
   }
-});
+);
 
 /**
  * @route POST /api/video/join/:sessionId
  * @desc Join a video session
  * @access Private
  */
-router.post('/join/:sessionId', verifyToken, async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const userId = req.user.id;
-
-    const sessionDetails = await videoService.joinVideoSession(sessionId, userId);
-
-    res.json({
-      message: 'Successfully joined video session',
-      ...sessionDetails
-    });
-  } catch (error) {
-    console.error('Join video session error:', error);
-    res.status(error.message.includes('not found') ? 404 : 500).json({
-      message: 'Error joining video session',
-      error: error.message
-    });
-  }
-});
+router.post('/join/:sessionId', 
+  AuthMiddleware.authenticate,
+  VideoHandler.joinSession
+);
 
 /**
  * @route POST /api/video/end/:sessionId
  * @desc End a video session
  * @access Private
  */
-router.post('/end/:sessionId', verifyToken, async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const result = await videoService.endVideoSession(sessionId);
+router.post('/end/:sessionId', 
+  AuthMiddleware.authenticate,
+  VideoHandler.endSession
+);
 
-    res.json({
-      message: 'Video session ended successfully',
-      ...result
-    });
-  } catch (error) {
-    console.error('End video session error:', error);
-    res.status(error.message.includes('not found') ? 404 : 500).json({
-      message: 'Error ending video session',
-      error: error.message
-    });
+/**
+ * @swagger
+ * /api/v1/video/sessions/{sessionId}:
+ *   get:
+ *     tags:
+ *       - Video
+ *     summary: Get session details
+ *     description: Retrieve details of a specific video session
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Video session ID
+ *     responses:
+ *       200:
+ *         description: Session details retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/VideoSession'
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to view session
+ *       404:
+ *         description: Session not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/sessions/:sessionId', 
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching video session details', {
+        userId: req.user.id,
+        sessionId: req.params.sessionId
+      });
+      await VideoHandler.getSessionDetails(req, res);
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
+
+/**
+ * @swagger
+ * /api/v1/video/sessions/{sessionId}/join:
+ *   post:
+ *     tags:
+ *       - Video
+ *     summary: Join a video session
+ *     description: Join an active video consultation session
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Video session ID
+ *     responses:
+ *       200:
+ *         description: Successfully joined the session
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token:
+ *                   type: string
+ *                   description: Token for joining the video session
+ *                 sessionId:
+ *                   type: string
+ *                   description: Video session ID
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to join session
+ *       404:
+ *         description: Session not found
+ *       409:
+ *         description: Session is not active
+ *       500:
+ *         description: Server error
+ */
+router.post('/sessions/:sessionId/join', 
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Joining video session', {
+        userId: req.user.id,
+        sessionId: req.params.sessionId
+      });
+      await VideoHandler.joinSession(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/video/sessions/{sessionId}/end:
+ *   post:
+ *     tags:
+ *       - Video
+ *     summary: End a video session
+ *     description: End an active video consultation session
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Video session ID
+ *     responses:
+ *       200:
+ *         description: Session ended successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/VideoSession'
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to end session
+ *       404:
+ *         description: Session not found
+ *       409:
+ *         description: Session is not active
+ *       500:
+ *         description: Server error
+ */
+router.post('/sessions/:sessionId/end', 
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Ending video session', {
+        userId: req.user.id,
+        sessionId: req.params.sessionId
+      });
+      await VideoHandler.endSession(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/video/sessions/{sessionId}/recording:
+ *   get:
+ *     tags:
+ *       - Video
+ *     summary: Get session recording
+ *     description: Get the recording URL for a completed video session
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Video session ID
+ *     responses:
+ *       200:
+ *         description: Recording URL retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 recordingUrl:
+ *                   type: string
+ *                   description: URL to access the session recording
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to access recording
+ *       404:
+ *         description: Session not found
+ *       409:
+ *         description: Recording not available
+ *       500:
+ *         description: Server error
+ */
+router.get('/sessions/:sessionId/recording',
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching session recording', {
+        userId: req.user.id,
+        sessionId: req.params.sessionId
+      });
+      await VideoHandler.getSessionRecording(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v1/video/sessions/{sessionId}/chat:
+ *   get:
+ *     tags:
+ *       - Video
+ *     summary: Get session chat history
+ *     description: Get the chat history for a video session
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Video session ID
+ *     responses:
+ *       200:
+ *         description: Chat history retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 messages:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       senderId:
+ *                         type: string
+ *                       message:
+ *                         type: string
+ *                       timestamp:
+ *                         type: string
+ *                         format: date-time
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to access chat
+ *       404:
+ *         description: Session not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/sessions/:sessionId/chat',
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching session chat history', {
+        userId: req.user.id,
+        sessionId: req.params.sessionId
+      });
+      await VideoHandler.getSessionChat(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 module.exports = router;

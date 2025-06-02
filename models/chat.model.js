@@ -1,4 +1,3 @@
-
 const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema({
@@ -41,9 +40,9 @@ const chatSchema = new mongoose.Schema({
     required: true
   }],
   messages: [messageSchema],
-  lastActivity: {
-    type: Date,
-    default: Date.now
+  lastMessage: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Message'
   },
   createdAt: {
     type: Date,
@@ -55,4 +54,12 @@ const chatSchema = new mongoose.Schema({
   }
 });
 
-module.exports = mongoose.model('Chat', chatSchema);
+// Update the updatedAt timestamp before saving
+chatSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
+});
+
+const Chat = mongoose.model('Chat', chatSchema);
+
+module.exports = Chat;

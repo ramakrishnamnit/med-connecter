@@ -3,212 +3,268 @@ const { body, validationResult } = require('express-validator');
 const mongoose = require('mongoose');
 const multer = require('multer');
 const Chat = require('../models/chat.model');
+const Message = require('../models/message.model');
 const Appointment = require('../models/appointment.model');
-const { verifyToken } = require('../middleware/auth.middleware');
-const { uploadToS3 } = require('../services/aws.service');
-const chatService = require('../services/chat.service');
+const AuthMiddleware = require('../middleware/auth.middleware');
+const ChatHandler = require('../handlers/chat.handler');
+const AWSService = require('../services/aws.service');
 
 const router = express.Router();
 
-// Configure multer for memory storage (we'll upload directly to S3)
+// Configure multer for memory storage
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
 
 /**
- * @route GET /api/chats/:appointmentId
- * @desc Get chat messages for an appointment
- * @access Private
+ * @swagger
+ * components:
+ *   schemas:
+ *     Message:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: The message ID
+ *         chatId:
+ *           type: string
+ *           description: ID of the chat
+ *         senderId:
+ *           type: string
+ *           description: ID of the message sender
+ *         content:
+ *           type: string
+ *           description: Message content
+ *         type:
+ *           type: string
+ *           enum: [text, image, file]
+ *           description: Type of message
+ *         fileUrl:
+ *           type: string
+ *           description: URL of attached file (if any)
+ *         read:
+ *           type: boolean
+ *           description: Whether the message has been read
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the message was created
+ *         updatedAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the message was last updated
  */
-router.get('/:appointmentId', verifyToken, async (req, res) => {
-  try {
-    const { appointmentId } = req.params;
-    const { limit = 50, skip = 0 } = req.query;
-    
-    // Validate appointment ID
-    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
-      return res.status(400).json({ message: 'Invalid appointment ID format' });
-    }
-    
-    // Verify user has access to this appointment
-    const appointment = await Appointment.findById(appointmentId);
-    if (!appointment) {
-      return res.status(404).json({ message: 'Appointment not found' });
-    }
-    
-    const isParticipant = 
-      appointment.patientId.toString() === req.user.id ||
-      appointment.doctorId.toString() === req.user.id;
-    
-    if (!isParticipant) {
-      return res.status(403).json({ message: 'Access denied: Not your appointment' });
-    }
-    
-    // Get chat messages
-    const messages = await chatService.getMessages(
-      appointmentId,
-      req.user.id,
-      Number(limit),
-      Number(skip)
-    );
-    
-    // Mark messages as read
-    await chatService.markMessagesAsRead(appointmentId, req.user.id);
-    
-    res.json({ messages });
-  } catch (error) {
-    console.error('Get chat messages error:', error);
-    res.status(500).json({ message: 'Server error fetching chat messages' });
-  }
-});
 
 /**
- * @route POST /api/chats/:appointmentId/message
- * @desc Send a text message
- * @access Private
+ * @swagger
+ * tags:
+ *   name: Chat
+ *   description: Chat management endpoints
  */
-router.post('/:appointmentId/message', verifyToken, [
-  body('content').trim().notEmpty().withMessage('Message content cannot be empty')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const { appointmentId } = req.params;
-    const { content } = req.body;
-    
-    // Validate appointment ID
-    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
-      return res.status(400).json({ message: 'Invalid appointment ID format' });
-    }
-    
-    // Verify appointment and chat existence
-    const appointment = await Appointment.findById(appointmentId);
-    if (!appointment) {
-      return res.status(404).json({ message: 'Appointment not found' });
-    }
-    
-    // Check if user is part of this appointment
-    const isParticipant = 
-      appointment.patientId.toString() === req.user.id ||
-      appointment.doctorId.toString() === req.user.id;
-    
-    if (!isParticipant) {
-      return res.status(403).json({ message: 'Access denied: Not your appointment' });
-    }
-    
-    // Add message
-    const message = await chatService.saveMessage(
-      appointmentId,
-      req.user.id,
-      content
-    );
-    
-    // In production, we would emit a socket event here
-    
-    res.status(201).json({ message });
-  } catch (error) {
-    console.error('Send message error:', error);
-    res.status(500).json({ message: 'Server error sending message' });
-  }
-});
 
 /**
- * @route POST /api/chats/:appointmentId/file
- * @desc Upload a file to chat
- * @access Private
+ * @swagger
+ * /api/v1/chats/{appointmentId}:
+ *   get:
+ *     tags:
+ *       - Chat
+ *     summary: Get chat messages for an appointment
+ *     description: Retrieve all messages for a specific appointment chat
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: appointmentId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Appointment ID
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 50
+ *         description: Number of messages per page
+ *     responses:
+ *       200:
+ *         description: Chat messages retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 messages:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Message'
+ *                 total:
+ *                   type: integer
+ *                 page:
+ *                   type: integer
+ *                 pages:
+ *                   type: integer
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Chat not found
+ *       500:
+ *         description: Server error
  */
-router.post('/:appointmentId/file', verifyToken, upload.single('file'), async (req, res) => {
-  try {
-    const { appointmentId } = req.params;
-    
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
-    }
-    
-    // Validate appointment ID
-    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
-      return res.status(400).json({ message: 'Invalid appointment ID format' });
-    }
-    
-    // Verify appointment and chat existence
-    const appointment = await Appointment.findById(appointmentId);
-    if (!appointment) {
-      return res.status(404).json({ message: 'Appointment not found' });
-    }
-    
-    // Check if user is part of this appointment
-    const isParticipant = 
-      appointment.patientId.toString() === req.user.id ||
-      appointment.doctorId.toString() === req.user.id;
-    
-    if (!isParticipant) {
-      return res.status(403).json({ message: 'Access denied: Not your appointment' });
-    }
-    
-    // Determine file type
-    const isImage = req.file.mimetype.startsWith('image/');
-    const fileType = isImage ? 'image' : 'file';
-    
-    // Upload to S3
-    const fileUrl = await uploadToS3(
-      req.file.buffer,
-      req.file.originalname,
-      req.file.mimetype
-    );
-    
-    // Add message with file
-    const message = await chatService.saveMessage(
-      appointmentId,
-      req.user.id,
-      req.file.originalname,
-      fileType,
-      fileUrl
-    );
-    
-    // In production, we would emit a socket event here
-    
-    res.status(201).json({
-      message,
-      fileUrl
-    });
-  } catch (error) {
-    console.error('Upload chat file error:', error);
-    res.status(500).json({ message: 'Server error uploading file' });
-  }
-});
+router.get('/:appointmentId', 
+  AuthMiddleware.authenticate,
+  ChatHandler.getChatMessages
+);
 
 /**
- * @route GET /api/chats/unread-count
- * @desc Get count of unread messages across all chats
- * @access Private
+ * @swagger
+ * /api/v1/chats/{appointmentId}/message:
+ *   post:
+ *     tags:
+ *       - Chat
+ *     summary: Send a text message
+ *     description: Send a new text message in the chat
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: appointmentId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Appointment ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - content
+ *               - type
+ *             properties:
+ *               content:
+ *                 type: string
+ *                 description: Message content
+ *               type:
+ *                 type: string
+ *                 enum: [text, image, file]
+ *                 description: Type of message
+ *     responses:
+ *       201:
+ *         description: Message sent successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Message'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Chat not found
+ *       500:
+ *         description: Server error
  */
-router.get('/unread-count', verifyToken, async (req, res) => {
-  try {
-    // Find all chats where user is a participant
-    const chats = await Chat.find({
-      participants: req.user.id
-    });
-    
-    // Count unread messages
-    let unreadCount = 0;
-    chats.forEach(chat => {
-      chat.messages.forEach(message => {
-        if (!message.read && message.senderId.toString() !== req.user.id) {
-          unreadCount++;
-        }
-      });
-    });
-    
-    res.json({ unreadCount });
-  } catch (error) {
-    console.error('Get unread count error:', error);
-    res.status(500).json({ message: 'Server error counting unread messages' });
-  }
-});
+router.post('/:appointmentId/message', 
+  AuthMiddleware.authenticate,
+  [
+    body('content').isString().withMessage('Message content must be a string'),
+    body('type').isIn(['text', 'image', 'file']).withMessage('Invalid message type')
+  ],
+  ChatHandler.sendMessage
+);
+
+/**
+ * @swagger
+ * /api/v1/chats/{appointmentId}/file:
+ *   post:
+ *     tags:
+ *       - Chat
+ *     summary: Upload a file to chat
+ *     description: Upload and attach a file to the chat
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: appointmentId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Appointment ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - file
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *                 description: File to upload (max 5MB)
+ *     responses:
+ *       201:
+ *         description: File uploaded successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Message'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Chat not found
+ *       413:
+ *         description: File too large
+ *       500:
+ *         description: Server error
+ */
+router.post('/:appointmentId/file', 
+  AuthMiddleware.authenticate,
+  upload.single('file'),
+  ChatHandler.uploadFile
+);
+
+/**
+ * @swagger
+ * /api/v1/chats/unread-count:
+ *   get:
+ *     tags:
+ *       - Chat
+ *     summary: Get unread message count
+ *     description: Get the total number of unread messages across all chats
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Unread count retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 count:
+ *                   type: integer
+ *                   description: Total number of unread messages
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.get('/unread-count', 
+  AuthMiddleware.authenticate,
+  ChatHandler.getUnreadCount
+);
 
 module.exports = router;

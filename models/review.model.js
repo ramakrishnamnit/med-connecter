@@ -1,4 +1,3 @@
-
 const mongoose = require('mongoose');
 
 const reviewSchema = new mongoose.Schema({
@@ -12,10 +11,6 @@ const reviewSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-  appointmentId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Appointment'
-  },
   rating: {
     type: Number,
     required: true,
@@ -26,6 +21,22 @@ const reviewSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  status: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending'
+  },
+  appointmentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Appointment'
+  },
+  isVerified: {
+    type: Boolean,
+    default: false
+  },
+  rejectionReason: {
+    type: String
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -34,11 +45,25 @@ const reviewSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   }
+}, {
+  timestamps: true
 });
 
-// Add index for faster querying
-reviewSchema.index({ doctorId: 1 });
-reviewSchema.index({ patientId: 1 });
+// Index for faster queries
+reviewSchema.index({ doctorId: 1, createdAt: -1 });
+reviewSchema.index({ patientId: 1, createdAt: -1 });
+reviewSchema.index({ status: 1 });
+
+// Ensure one review per appointment
+reviewSchema.pre('save', async function(next) {
+  if (this.isNew) {
+    const existingReview = await this.constructor.findOne({ appointmentId: this.appointmentId });
+    if (existingReview) {
+      throw new Error('A review already exists for this appointment');
+    }
+  }
+  next();
+});
 
 // Update the updatedAt field before saving
 reviewSchema.pre('save', function(next) {
@@ -84,4 +109,6 @@ reviewSchema.post('remove', function() {
   this.constructor.calculateAverageRating(this.doctorId);
 });
 
-module.exports = mongoose.model('Review', reviewSchema);
+const Review = mongoose.model('Review', reviewSchema);
+
+module.exports = Review;

@@ -1,280 +1,369 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const mongoose = require('mongoose');
 const Review = require('../models/review.model');
-const User = require('../models/user.model');
-const Doctor = require('../models/doctor.model');
-const { verifyToken } = require('../middleware/auth.middleware');
+const Appointment = require('../models/appointment.model');
+const AuthMiddleware = require('../middleware/auth.middleware');
+const ReviewHandler = require('../handlers/review.handler');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
-// Validation middleware
-const validateReview = [
-  body('doctorId').notEmpty().withMessage('Doctor ID is required'),
-  body('rating').isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
-  body('comment').notEmpty().withMessage('Comment is required')
-];
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     Review:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: The review ID
+ *         doctorId:
+ *           type: string
+ *           description: ID of the doctor being reviewed
+ *         patientId:
+ *           type: string
+ *           description: ID of the patient writing the review
+ *         rating:
+ *           type: number
+ *           minimum: 1
+ *           maximum: 5
+ *           description: Rating given (1-5)
+ *         comment:
+ *           type: string
+ *           description: Review comment
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the review was created
+ *         updatedAt:
+ *           type: string
+ *           format: date-time
+ *           description: When the review was last updated
+ */
 
-router.post('/', verifyToken, validateReview, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
+/**
+ * @swagger
+ * tags:
+ *   name: Reviews
+ *   description: Review management endpoints
+ */
+
+/**
+ * @swagger
+ * /api/v1/reviews:
+ *   post:
+ *     tags:
+ *       - Reviews
+ *     summary: Create a new review
+ *     description: Create a new review for a doctor
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - doctorId
+ *               - rating
+ *             properties:
+ *               doctorId:
+ *                 type: string
+ *                 description: ID of the doctor being reviewed
+ *               rating:
+ *                 type: number
+ *                 minimum: 1
+ *                 maximum: 5
+ *                 description: Rating given (1-5)
+ *               comment:
+ *                 type: string
+ *                 description: Review comment
+ *     responses:
+ *       201:
+ *         description: Review created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Review'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to review
+ *       404:
+ *         description: Doctor not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/', 
+  AuthMiddleware.authenticate,
+  AuthMiddleware.authorize(['user']),
+  [
+    body('doctorId').isMongoId().withMessage('Invalid doctor ID'),
+    body('rating').isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
+    body('comment').optional().isString().withMessage('Comment must be a string')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Creating new review', {
+        userId: req.user.id,
+        doctorId: req.body.doctorId,
+        rating: req.body.rating
+      });
+      await ReviewHandler.createReview(req, res);
+    } catch (error) {
+      next(error);
+    }
   }
+);
 
-  try {
-    // Check if user is a patient
-    const user = await User.findById(req.user.id);
-    if (!user || user.role !== 'patient') {
-      return res.status(403).json({
-        error: true,
-        message: 'Only patients can submit reviews'
+/**
+ * @swagger
+ * /api/v1/reviews/{id}:
+ *   put:
+ *     tags:
+ *       - Reviews
+ *     summary: Update a review
+ *     description: Update an existing review
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Review ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               rating:
+ *                 type: number
+ *                 minimum: 1
+ *                 maximum: 5
+ *                 description: Updated rating (1-5)
+ *               comment:
+ *                 type: string
+ *                 description: Updated review comment
+ *     responses:
+ *       200:
+ *         description: Review updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Review'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to update review
+ *       404:
+ *         description: Review not found
+ *       500:
+ *         description: Server error
+ */
+router.put('/:id', 
+  AuthMiddleware.authenticate,
+  [
+    body('rating').optional().isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
+    body('comment').optional().isString().withMessage('Comment must be a string')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Updating review', {
+        userId: req.user.id,
+        reviewId: req.params.id,
+        updates: req.body
       });
+      await ReviewHandler.updateReview(req, res);
+    } catch (error) {
+      next(error);
     }
-
-    // Check if doctor exists
-    const doctor = await Doctor.findById(req.body.doctorId);
-    if (!doctor) {
-      return res.status(404).json({
-        error: true,
-        message: 'Doctor not found'
-      });
-    }
-
-    // Check if user has already reviewed this doctor
-    const existingReview = await Review.findOne({
-      doctorId: req.body.doctorId,
-      patientId: req.user.id
-    });
-
-    if (existingReview) {
-      return res.status(400).json({
-        error: true,
-        message: 'You have already reviewed this doctor. You can update your existing review.'
-      });
-    }
-
-    // Create new review
-    const newReview = new Review({
-      doctorId: req.body.doctorId,
-      patientId: req.user.id,
-      appointmentId: req.body.appointmentId,
-      rating: req.body.rating,
-      comment: req.body.comment
-    });
-
-    const savedReview = await newReview.save();
-
-    // Get user data to send in response
-    const { firstName, lastName } = user;
-
-    res.status(201).json({
-      id: savedReview._id,
-      doctorId: savedReview.doctorId,
-      patientId: savedReview.patientId,
-      patientName: `${firstName} ${lastName}`,
-      rating: savedReview.rating,
-      comment: savedReview.comment,
-      createdAt: savedReview.createdAt,
-      updatedAt: savedReview.updatedAt
-    });
-  } catch (error) {
-    console.error('Create review error:', error);
-    res.status(500).json({
-      error: true,
-      message: 'Server error while creating review'
-    });
   }
-});
+);
 
-router.put('/:reviewId', verifyToken, validateReview, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    // Find the review
-    const review = await Review.findById(req.params.reviewId);
-    if (!review) {
-      return res.status(404).json({
-        error: true,
-        message: 'Review not found'
+/**
+ * @swagger
+ * /api/v1/reviews/{id}:
+ *   delete:
+ *     tags:
+ *       - Reviews
+ *     summary: Delete a review
+ *     description: Delete an existing review
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Review ID
+ *     responses:
+ *       200:
+ *         description: Review deleted successfully
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Not authorized to delete review
+ *       404:
+ *         description: Review not found
+ *       500:
+ *         description: Server error
+ */
+router.delete('/:id', 
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Deleting review', {
+        userId: req.user.id,
+        reviewId: req.params.id
       });
+      await ReviewHandler.deleteReview(req, res);
+    } catch (error) {
+      next(error);
     }
-
-    // Check ownership
-    if (review.patientId.toString() !== req.user.id) {
-      return res.status(403).json({
-        error: true,
-        message: 'You can only update your own reviews'
-      });
-    }
-
-    // Update the review
-    review.rating = req.body.rating;
-    review.comment = req.body.comment;
-    review.updatedAt = Date.now();
-
-    const updatedReview = await review.save();
-    const user = await User.findById(req.user.id);
-
-    res.json({
-      id: updatedReview._id,
-      doctorId: updatedReview.doctorId,
-      patientId: updatedReview.patientId,
-      patientName: `${user.firstName} ${user.lastName}`,
-      rating: updatedReview.rating,
-      comment: updatedReview.comment,
-      createdAt: updatedReview.createdAt,
-      updatedAt: updatedReview.updatedAt
-    });
-  } catch (error) {
-    console.error('Update review error:', error);
-    res.status(500).json({
-      error: true,
-      message: 'Server error while updating review'
-    });
   }
-});
+);
 
-router.delete('/:reviewId', verifyToken, async (req, res) => {
-  try {
-    // Find the review
-    const review = await Review.findById(req.params.reviewId);
-    if (!review) {
-      return res.status(404).json({
-        error: true,
-        message: 'Review not found'
+/**
+ * @swagger
+ * /api/v1/reviews/doctor/{doctorId}:
+ *   get:
+ *     tags:
+ *       - Reviews
+ *     summary: Get doctor's reviews
+ *     description: Get all reviews for a specific doctor
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: doctorId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Doctor ID
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Number of items per page
+ *     responses:
+ *       200:
+ *         description: Reviews retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 reviews:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Review'
+ *                 total:
+ *                   type: integer
+ *                 page:
+ *                   type: integer
+ *                 pages:
+ *                   type: integer
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Doctor not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/doctor/:doctorId', 
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching doctor reviews', {
+        userId: req.user.id,
+        doctorId: req.params.doctorId,
+        query: req.query
       });
+      await ReviewHandler.getDoctorReviews(req, res);
+    } catch (error) {
+      next(error);
     }
+  }
+);
 
-    // Check ownership or admin status
-    const user = await User.findById(req.user.id);
-    if (review.patientId.toString() !== req.user.id && user.role !== 'admin') {
-      return res.status(403).json({
-        error: true,
-        message: 'You can only delete your own reviews'
+/**
+ * @swagger
+ * /api/v1/reviews/my-reviews:
+ *   get:
+ *     tags:
+ *       - Reviews
+ *     summary: Get user's reviews
+ *     description: Get all reviews written by the authenticated user
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Number of items per page
+ *     responses:
+ *       200:
+ *         description: Reviews retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 reviews:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Review'
+ *                 total:
+ *                   type: integer
+ *                 page:
+ *                   type: integer
+ *                 pages:
+ *                   type: integer
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.get('/my-reviews', 
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching user reviews', {
+        userId: req.user.id,
+        query: req.query
       });
+      await ReviewHandler.getMyReviews(req, res);
+    } catch (error) {
+      next(error);
     }
-
-    await review.remove();
-    res.json({ message: 'Review deleted successfully' });
-  } catch (error) {
-    console.error('Delete review error:', error);
-    res.status(500).json({
-      error: true,
-      message: 'Server error while deleting review'
-    });
   }
-});
-
-router.get('/doctor/:doctorId', async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
-
-    // Check if doctor exists
-    const doctor = await Doctor.findById(req.params.doctorId);
-    if (!doctor) {
-      return res.status(404).json({
-        error: true,
-        message: 'Doctor not found'
-      });
-    }
-
-    // Get reviews with pagination
-    const reviews = await Review.find({ doctorId: req.params.doctorId })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
-
-    // Get total count for pagination
-    const totalReviews = await Review.countDocuments({ doctorId: req.params.doctorId });
-
-    // Fetch user data for each review
-    const reviewsWithUserData = await Promise.all(reviews.map(async (review) => {
-      const user = await User.findById(review.patientId).select('firstName lastName');
-      return {
-        id: review._id,
-        doctorId: review.doctorId,
-        patientId: review.patientId,
-        patientName: user ? `${user.firstName} ${user.lastName}` : 'Anonymous User',
-        rating: review.rating,
-        comment: review.comment,
-        createdAt: review.createdAt,
-        updatedAt: review.updatedAt
-      };
-    }));
-
-    res.json({
-      reviews: reviewsWithUserData,
-      pageInfo: {
-        currentPage: page,
-        totalPages: Math.ceil(totalReviews / limit),
-        totalReviews
-      },
-      hasMore: skip + reviews.length < totalReviews
-    });
-  } catch (error) {
-    console.error('Get doctor reviews error:', error);
-    res.status(500).json({
-      error: true,
-      message: 'Server error while fetching doctor reviews'
-    });
-  }
-});
-
-router.get('/me', verifyToken, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
-
-    // Get user's reviews with pagination
-    const reviews = await Review.find({ patientId: req.user.id })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .populate('doctorId', 'userId');
-
-    // Get total count for pagination
-    const totalReviews = await Review.countDocuments({ patientId: req.user.id });
-
-    // Fetch doctor and user data for each review
-    const reviewsWithData = await Promise.all(reviews.map(async (review) => {
-      const doctor = review.doctorId;
-      const doctorUser = doctor ? await User.findById(doctor.userId).select('firstName lastName') : null;
-      const patient = await User.findById(review.patientId).select('firstName lastName');
-      
-      return {
-        id: review._id,
-        doctorId: review.doctorId._id,
-        doctorName: doctorUser ? `Dr. ${doctorUser.firstName} ${doctorUser.lastName}` : 'Unknown Doctor',
-        patientId: review.patientId,
-        patientName: patient ? `${patient.firstName} ${patient.lastName}` : 'Anonymous User',
-        rating: review.rating,
-        comment: review.comment,
-        createdAt: review.createdAt,
-        updatedAt: review.updatedAt
-      };
-    }));
-
-    res.json({
-      reviews: reviewsWithData,
-      pageInfo: {
-        currentPage: page,
-        totalPages: Math.ceil(totalReviews / limit),
-        totalReviews
-      },
-      hasMore: skip + reviews.length < totalReviews
-    });
-  } catch (error) {
-    console.error('Get user reviews error:', error);
-    res.status(500).json({
-      error: true,
-      message: 'Server error while fetching your reviews'
-    });
-  }
-});
+);
 
 module.exports = router;
