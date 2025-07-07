@@ -144,6 +144,14 @@ const doctorSchema = new mongoose.Schema({
       }
     }]
   }],
+  unavailability: [{
+    date: { type: Date, required: true },
+    slots: [{
+      startTime: { type: String, required: true },
+      endTime: { type: String, required: true }
+    }],
+    reason: { type: String }
+  }],
   status: {
     type: String,
     enum: ['pending', 'active', 'inactive', 'suspended'],

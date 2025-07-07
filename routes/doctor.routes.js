@@ -556,16 +556,16 @@ router.post('/profile', AuthMiddleware.authenticate, DoctorHandler.createOrUpdat
 
 /**
  * @swagger
- * /api/v1/doctors/{id}:
+ * /api/v1/doctors/getById:
  *   get:
  *     tags:
  *       - Doctors
  *     summary: Get doctor by ID
- *     description: Retrieve a specific doctor's profile by ID
+ *     description: Retrieve a specific doctor's profile by ID using a query parameter
  *     security:
  *       - bearerAuth: []
  *     parameters:
- *       - in: path
+ *       - in: query
  *         name: id
  *         required: true
  *         schema:
@@ -585,57 +585,7 @@ router.post('/profile', AuthMiddleware.authenticate, DoctorHandler.createOrUpdat
  *       500:
  *         description: Server error
  */
-router.get('/:id', DoctorHandler.getDoctorById);
-
-/**
- * @swagger
- * /api/v1/doctors/verify/{id}:
- *   put:
- *     tags:
- *       - Doctors
- *     summary: Verify a doctor
- *     description: Mark a doctor as verified (admin only)
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Doctor ID
- *     responses:
- *       200:
- *         description: Doctor verified successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Doctor'
- *       401:
- *         description: Unauthorized
- *       403:
- *         description: Forbidden - Admin access required
- *       404:
- *         description: Doctor not found
- *       500:
- *         description: Server error
- */
-router.post('/:id/verify', AuthMiddleware.authenticate, AuthMiddleware.authorize(['admin']), DoctorHandler.verifyDoctor);
-
-/**
- * @swagger
- * /api/v1/doctors/reviews:
- *   get:
- *     tags:
- *       - Doctors
- *     summary: Get doctor's reviews
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Reviews retrieved successfully
- */
-router.get('/reviews', AuthMiddleware.authenticate, DoctorHandler.getDoctorReviews);
+router.get('/getById', DoctorHandler.getDoctorById);
 
 /**
  * @swagger
@@ -840,7 +790,7 @@ router.get('/specialties', DoctorHandler.getSpecialties);
  *       500:
  *         description: Server error
  */
-router.get('/:id/availability', DoctorHandler.getAvailability);
+router.get('/availability', DoctorHandler.getAvailability);
 
 /**
  * @swagger
@@ -849,7 +799,7 @@ router.get('/:id/availability', DoctorHandler.getAvailability);
  *     tags:
  *       - Doctors
  *     summary: Update doctor availability
- *     description: Update the authenticated doctor's availability schedule
+ *     description: Update the authenticated doctor's recurring weekly availability schedule. The request body should be an array of objects, each with a day and a slots array.
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -862,92 +812,59 @@ router.get('/:id/availability', DoctorHandler.getAvailability);
  *               - availability
  *             properties:
  *               availability:
- *                 type: object
- *                 properties:
- *                   monday:
- *                     type: array
- *                     items:
- *                       type: object
- *                       properties:
- *                         start:
- *                           type: string
- *                           format: time
- *                         end:
- *                           type: string
- *                           format: time
- *                   tuesday:
- *                     type: array
- *                     items:
- *                       type: object
- *                       properties:
- *                         start:
- *                           type: string
- *                           format: time
- *                         end:
- *                           type: string
- *                           format: time
- *                   wednesday:
- *                     type: array
- *                     items:
- *                       type: object
- *                       properties:
- *                         start:
- *                           type: string
- *                           format: time
- *                         end:
- *                           type: string
- *                           format: time
- *                   thursday:
- *                     type: array
- *                     items:
- *                       type: object
- *                       properties:
- *                         start:
- *                           type: string
- *                           format: time
- *                         end:
- *                           type: string
- *                           format: time
- *                   friday:
- *                     type: array
- *                     items:
- *                       type: object
- *                       properties:
- *                         start:
- *                           type: string
- *                           format: time
- *                         end:
- *                           type: string
- *                           format: time
- *                   saturday:
- *                     type: array
- *                     items:
- *                       type: object
- *                       properties:
- *                         start:
- *                           type: string
- *                           format: time
- *                         end:
- *                           type: string
- *                           format: time
- *                   sunday:
- *                     type: array
- *                     items:
- *                       type: object
- *                       properties:
- *                         start:
- *                           type: string
- *                           format: time
- *                         end:
- *                           type: string
- *                           format: time
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - day
+ *                     - slots
+ *                   properties:
+ *                     day:
+ *                       type: string
+ *                       enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+ *                       description: Day of the week
+ *                     slots:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         required:
+ *                           - startTime
+ *                           - endTime
+ *                         properties:
+ *                           startTime:
+ *                             type: string
+ *                             description: Slot start time (HH:mm)
+ *                           endTime:
+ *                             type: string
+ *                             description: Slot end time (HH:mm)
  *     responses:
  *       200:
  *         description: Availability updated successfully
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/Doctor'
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 availability:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       day:
+ *                         type: string
+ *                       slots:
+ *                         type: array
+ *                         items:
+ *                           type: object
+ *                           properties:
+ *                             startTime:
+ *                               type: string
+ *                             endTime:
+ *                               type: string
  *       400:
  *         description: Invalid request data
  *       401:
@@ -957,7 +874,7 @@ router.get('/:id/availability', DoctorHandler.getAvailability);
  *       500:
  *         description: Server error
  */
-router.put('/profile/availability', AuthMiddleware.authenticate, AuthMiddleware.authorize(['doctor']), DoctorHandler.updateAvailability);
+router.put('/availability', AuthMiddleware.authenticate, AuthMiddleware.authorize(['doctor']), DoctorHandler.updateAvailability);
 
 /**
  * @swagger
@@ -1086,5 +1003,115 @@ router.post('/verify-registration', AuthMiddleware.authenticate, DoctorHandler.v
  *         description: Server error
  */
 router.post('/register', AuthMiddleware.authenticate, DoctorHandler.registerDoctor);
+
+/**
+ * @swagger
+ * /api/v1/doctors/unavailability:
+ *   post:
+ *     tags:
+ *       - Doctors
+ *     summary: Add or update unavailability for a doctor
+ *     description: Add or update unavailable slots for a specific date
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - date
+ *               - slots
+ *             properties:
+ *               date:
+ *                 type: string
+ *                 format: date
+ *                 description: Date for unavailability (YYYY-MM-DD)
+ *               slots:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - startTime
+ *                     - endTime
+ *                   properties:
+ *                     startTime:
+ *                       type: string
+ *                       description: Start time (HH:mm)
+ *                     endTime:
+ *                       type: string
+ *                       description: End time (HH:mm)
+ *               reason:
+ *                 type: string
+ *                 description: Reason for unavailability
+ *     responses:
+ *       200:
+ *         description: Unavailability added/updated successfully
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.post('/unavailability', AuthMiddleware.authenticate, AuthMiddleware.authorize(['doctor']), DoctorHandler.addUnavailability);
+
+/**
+ * @swagger
+ * /api/v1/doctors/unavailability:
+ *   delete:
+ *     tags:
+ *       - Doctors
+ *     summary: Remove unavailability for a doctor
+ *     description: Remove unavailable slots for a specific date
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Date to remove unavailability (YYYY-MM-DD)
+ *     responses:
+ *       200:
+ *         description: Unavailability removed successfully
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.delete('/unavailability', AuthMiddleware.authenticate, AuthMiddleware.authorize(['doctor']), DoctorHandler.removeUnavailability);
+
+/**
+ * @swagger
+ * /api/v1/doctors/unavailability:
+ *   get:
+ *     tags:
+ *       - Doctors
+ *     summary: Get unavailability for a doctor
+ *     description: Get all unavailable slots for a doctor
+ *     parameters:
+ *       - in: query
+ *         name: doctorId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Doctor ID
+ *     responses:
+ *       200:
+ *         description: Unavailability fetched successfully
+ *       400:
+ *         description: Invalid request data
+ *       404:
+ *         description: Doctor not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/unavailability', DoctorHandler.getUnavailability);
 
 module.exports = router;

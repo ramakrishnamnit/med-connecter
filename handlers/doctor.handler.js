@@ -1,5 +1,6 @@
 const Doctor = require('../models/doctor.model');
 const User = require('../models/user.model');
+const Appointment = require('../models/appointment.model');
 const BigRegisterService = require('../services/bigRegister.service');
 const { isValidRegistrationNumber } = require('../utils/helpers');
 const { validationResult } = require('express-validator');
@@ -18,7 +19,7 @@ class DoctorHandler {
         registrationNumber
       });
 
-      if (!registrationNumber) {
+      if (!registrationNumber) {x
         return res.status(400).json({
           success: false,
           error: 'Registration number is required'
@@ -537,23 +538,24 @@ class DoctorHandler {
     }
   }
 
-  // Get doctor by ID
+  // Get doctor by ID (query param)
   static async getDoctorById(req, res) {
     try {
-      const doctor = await Doctor.findById(req.params.id)
-        .populate('userId', 'firstName lastName email');
-
+      const { id } = req.query;
+      if (!id) {
+        return res.status(400).json({
+          success: false,
+          error: 'Doctor id is required as a query parameter.'
+        });
+      }
+      const doctor = await Doctor.findById(id).populate('userId', 'firstName lastName email');
       if (!doctor) {
         return res.status(404).json({
           success: false,
           error: 'Doctor not found'
         });
       }
-
-      res.json({
-        success: true,
-        doctor
-      });
+      res.json({ success: true, doctor });
     } catch (error) {
       logger.error('Get doctor by ID error:', error);
       res.status(500).json({
@@ -563,39 +565,11 @@ class DoctorHandler {
     }
   }
 
-  // Verify doctor
-  static async verifyDoctor(req, res) {
-    try {
-      const doctor = await Doctor.findById(req.params.id);
-      if (!doctor) {
-        return res.status(404).json({
-          success: false,
-          error: 'Doctor not found'
-        });
-      }
-
-      doctor.verificationStatus = 'verified';
-      doctor.status = 'active';
-      await doctor.save();
-
-      res.json({
-        success: true,
-        message: 'Doctor verified successfully',
-        doctor
-      });
-    } catch (error) {
-      logger.error('Verify doctor error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to verify doctor'
-      });
-    }
-  }
-
   // Get all specialties
   static async getSpecialties(req, res) {
     try {
-      const specializations = await BigRegisterService.getSpecializations();
+      // Get unique specializations from the doctor collection
+      const specializations = await Doctor.distinct('specializations', { specializations: { $ne: [] } });
       res.json({
         success: true,
         data: specializations
@@ -614,25 +588,33 @@ class DoctorHandler {
     try {
       const { doctorId, startDate, endDate } = req.query;
       const doctor = await Doctor.findById(doctorId);
-
       if (!doctor) {
-        return res.status(404).json({
-          success: false,
-          error: 'Doctor not found'
-        });
+        return res.status(404).json({ success: false, error: 'Doctor not found' });
       }
-
-      // TODO: Implement availability filtering by date range
-      res.json({
-        success: true,
-        availability: doctor.availability
-      });
+      if (!startDate || !endDate) {
+        return res.status(400).json({ success: false, error: 'startDate and endDate are required' });
+      }
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      if (isNaN(start) || isNaN(end) || start > end) {
+        return res.status(400).json({ success: false, error: 'Invalid date range' });
+      }
+      const results = [];
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().slice(0, 10);
+        const weekday = d.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+        const recurring = doctor.availability.find(a => a.day === weekday);
+        let slots = recurring ? [...recurring.slots] : [];
+        const unavail = doctor.unavailability.find(u => u.date.toISOString().slice(0,10) === dateStr);
+        if (unavail) {
+          slots = slots.filter(slot => !unavail.slots.some(uSlot => slot.startTime < uSlot.endTime && slot.endTime > uSlot.startTime));
+        }
+        results.push({ date: dateStr, slots });
+      }
+      res.json({ success: true, availability: results });
     } catch (error) {
       logger.error('Get availability error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch availability'
-      });
+      res.status(500).json({ success: false, error: 'Failed to fetch availability' });
     }
   }
 
@@ -662,36 +644,6 @@ class DoctorHandler {
       res.status(500).json({
         success: false,
         error: 'Failed to update availability'
-      });
-    }
-  }
-
-  // Get doctor reviews
-  static async getDoctorReviews(req, res) {
-    try {
-      const userId = req.user._id.toString();
-      const doctor = await Doctor.findOne({ userId });
-
-      if (!doctor) {
-        return res.status(404).json({
-          success: false,
-          error: 'Doctor profile not found'
-        });
-      }
-
-      const reviews = await Review.find({ doctorId: doctor._id })
-        .populate('patientId', 'firstName lastName')
-        .sort({ createdAt: -1 });
-
-      res.json({
-        success: true,
-        reviews
-      });
-    } catch (error) {
-      logger.error('Get reviews error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch reviews'
       });
     }
   }
@@ -758,6 +710,66 @@ class DoctorHandler {
         success: false,
         error: 'Failed to register doctor'
       });
+    }
+  }
+
+  // Add or update unavailability for a doctor (add or update slots for a date)
+  static async addUnavailability(req, res) {
+    try {
+      const userId = req.user._id.toString();
+      const doctor = await Doctor.findOne({ userId });
+      if (!doctor) {
+        return res.status(404).json({ success: false, error: 'Doctor profile not found' });
+      }
+      const { date, slots, reason } = req.body;
+      if (!date || !Array.isArray(slots) || slots.length === 0) {
+        return res.status(400).json({ success: false, error: 'date and slots are required' });
+      }
+      // Remove any existing unavailability for this date
+      doctor.unavailability = doctor.unavailability.filter(u => u.date.toISOString().slice(0,10) !== new Date(date).toISOString().slice(0,10));
+      // Add new unavailability
+      doctor.unavailability.push({ date: new Date(date), slots, reason });
+      await doctor.save();
+      res.json({ success: true, unavailability: doctor.unavailability });
+    } catch (error) {
+      logger.error('Add unavailability error:', error);
+      res.status(500).json({ success: false, error: 'Failed to add unavailability' });
+    }
+  }
+
+  // Remove unavailability for a specific date
+  static async removeUnavailability(req, res) {
+    try {
+      const userId = req.user._id.toString();
+      const doctor = await Doctor.findOne({ userId });
+      if (!doctor) {
+        return res.status(404).json({ success: false, error: 'Doctor profile not found' });
+      }
+      const { date } = req.query;
+      if (!date) {
+        return res.status(400).json({ success: false, error: 'date is required' });
+      }
+      doctor.unavailability = doctor.unavailability.filter(u => u.date.toISOString().slice(0,10) !== new Date(date).toISOString().slice(0,10));
+      await doctor.save();
+      res.json({ success: true, unavailability: doctor.unavailability });
+    } catch (error) {
+      logger.error('Remove unavailability error:', error);
+      res.status(500).json({ success: false, error: 'Failed to remove unavailability' });
+    }
+  }
+
+  // Get unavailability for a doctor
+  static async getUnavailability(req, res) {
+    try {
+      const { doctorId } = req.query;
+      const doctor = await Doctor.findById(doctorId);
+      if (!doctor) {
+        return res.status(404).json({ success: false, error: 'Doctor not found' });
+      }
+      res.json({ success: true, unavailability: doctor.unavailability });
+    } catch (error) {
+      logger.error('Get unavailability error:', error);
+      res.status(500).json({ success: false, error: 'Failed to fetch unavailability' });
     }
   }
 }
