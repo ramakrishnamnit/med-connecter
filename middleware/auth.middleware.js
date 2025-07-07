@@ -67,7 +67,7 @@ class AuthMiddleware {
         });
       }
     } catch (error) {
-      logger.error('Authentication middleware error:', error);
+      logger.error('Authentication error:', error);
       return res.status(500).json({
         success: false,
         error: 'Internal server error'
@@ -75,7 +75,8 @@ class AuthMiddleware {
     }
   }
 
-  static authorize(roles = []) {
+  // Authorize based on roles
+  static authorize(allowedRoles = []) {
     return (req, res, next) => {
       try {
         if (!req.user) {
@@ -85,16 +86,45 @@ class AuthMiddleware {
           });
         }
 
-        if (roles.length && !roles.includes(req.user.role)) {
+        // Admin has access to everything
+        if (req.user.role === 'admin') {
+          next();
+          return;
+        }
+
+        // Check if user's role is in allowed roles
+        if (!allowedRoles.includes(req.user.role)) {
           return res.status(403).json({
             success: false,
-            error: 'Unauthorized access'
+            error: 'Insufficient permissions'
           });
         }
 
-        next();
+        // For doctor-specific routes, verify doctor profile
+        if (req.user.role === 'doctor') {
+          Doctor.findOne({ userId: req.user._id })
+            .then(doctor => {
+              if (!doctor) {
+                return res.status(403).json({
+                  success: false,
+                  error: 'Doctor profile not found'
+                });
+              }
+              req.doctor = doctor;
+              next();
+            })
+            .catch(error => {
+              logger.error('Doctor verification error:', error);
+              return res.status(500).json({
+                success: false,
+                error: 'Error verifying doctor profile'
+              });
+            });
+        } else {
+          next();
+        }
       } catch (error) {
-        logger.error('Authorization middleware error:', error);
+        logger.error('Authorization error:', error);
         return res.status(500).json({
           success: false,
           error: 'Internal server error'
@@ -135,7 +165,7 @@ class AuthMiddleware {
 
   // Check if user is a doctor
   static requireDoctor(req, res, next) {
-    if (req.user.role !== 'doctor') {
+    if (req.user.role !== 'doctor' && req.user.role !== 'admin') {
       return res.status(403).json({
         success: false,
         error: 'Doctor access required'
@@ -158,6 +188,12 @@ class AuthMiddleware {
   // Check if doctor profile is verified
   static async requireVerifiedDoctor(req, res, next) {
     try {
+      // Admin bypass
+      if (req.user.role === 'admin') {
+        next();
+        return;
+      }
+
       const doctor = await Doctor.findOne({ userId: req.user._id });
       if (!doctor || doctor.status !== 'approved') {
         return res.status(403).json({

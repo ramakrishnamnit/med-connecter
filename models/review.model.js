@@ -6,7 +6,7 @@ const reviewSchema = new mongoose.Schema({
     ref: 'Doctor',
     required: true
   },
-  patientId: {
+  userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
@@ -19,31 +19,14 @@ const reviewSchema = new mongoose.Schema({
   },
   comment: {
     type: String,
-    required: true
-  },
-  status: {
-    type: String,
-    enum: ['pending', 'approved', 'rejected'],
-    default: 'pending'
+    required: true,
+    trim: true,
+    maxlength: 1000
   },
   appointmentId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Appointment'
-  },
-  isVerified: {
-    type: Boolean,
-    default: false
-  },
-  rejectionReason: {
-    type: String
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
+    ref: 'Appointment',
+    required: true
   }
 }, {
   timestamps: true
@@ -51,8 +34,8 @@ const reviewSchema = new mongoose.Schema({
 
 // Index for faster queries
 reviewSchema.index({ doctorId: 1, createdAt: -1 });
-reviewSchema.index({ patientId: 1, createdAt: -1 });
-reviewSchema.index({ status: 1 });
+reviewSchema.index({ userId: 1, createdAt: -1 });
+reviewSchema.index({ appointmentId: 1 }, { unique: true });
 
 // Ensure one review per appointment
 reviewSchema.pre('save', async function(next) {
@@ -65,48 +48,34 @@ reviewSchema.pre('save', async function(next) {
   next();
 });
 
-// Update the updatedAt field before saving
-reviewSchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
-  next();
-});
-
-// Virtual for calculating average rating
-reviewSchema.statics.calculateAverageRating = async function(doctorId) {
+// Update doctor's average rating after review changes
+reviewSchema.statics.updateDoctorRating = async function(doctorId) {
   const result = await this.aggregate([
-    {
-      $match: { doctorId: mongoose.Types.ObjectId(doctorId) }
-    },
+    { $match: { doctorId: mongoose.Types.ObjectId(doctorId) } },
     {
       $group: {
         _id: '$doctorId',
         averageRating: { $avg: '$rating' },
-        count: { $sum: 1 }
+        totalReviews: { $sum: 1 }
       }
     }
   ]);
 
-  // Update doctor model with new rating data
   if (result.length > 0) {
-    try {
-      await mongoose.model('Doctor').findByIdAndUpdate(doctorId, {
-        'ratings.average': result[0].averageRating,
-        'ratings.count': result[0].count
-      });
-    } catch (error) {
-      console.error('Error updating doctor ratings:', error);
-    }
+    await mongoose.model('Doctor').findByIdAndUpdate(doctorId, {
+      'ratings.average': result[0].averageRating,
+      'ratings.count': result[0].totalReviews
+    });
   }
 };
 
-// After saving a review, calculate new average rating
+// Update doctor rating after save/remove
 reviewSchema.post('save', function() {
-  this.constructor.calculateAverageRating(this.doctorId);
+  this.constructor.updateDoctorRating(this.doctorId);
 });
 
-// After removing a review, calculate new average rating
 reviewSchema.post('remove', function() {
-  this.constructor.calculateAverageRating(this.doctorId);
+  this.constructor.updateDoctorRating(this.doctorId);
 });
 
 const Review = mongoose.model('Review', reviewSchema);

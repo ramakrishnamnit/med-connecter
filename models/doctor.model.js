@@ -9,7 +9,8 @@ const doctorSchema = new mongoose.Schema({
   registrationNumber: {
     type: String,
     required: true,
-    unique: true
+    unique: true,
+    trim: true
   },
   verificationStatus: {
     type: String,
@@ -32,7 +33,6 @@ const doctorSchema = new mongoose.Schema({
   },
   currency: {
     type: String,
-    required: true,
     default: 'EUR'
   },
   about: {
@@ -90,7 +90,10 @@ const doctorSchema = new mongoose.Schema({
       type: Number,
       required: true
     },
-    url: String
+    url: {
+      type: String,
+      format: 'uri'
+    }
   }],
   services: [{
     name: {
@@ -119,7 +122,6 @@ const doctorSchema = new mongoose.Schema({
     },
     country: {
       type: String,
-      required: true,
       default: 'Netherlands'
     }
   },
@@ -132,11 +134,13 @@ const doctorSchema = new mongoose.Schema({
     slots: [{
       startTime: {
         type: String,
-        required: true
+        required: true,
+        match: /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/
       },
       endTime: {
         type: String,
-        required: true
+        required: true,
+        match: /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/
       }
     }]
   }],
@@ -144,10 +148,32 @@ const doctorSchema = new mongoose.Schema({
     type: String,
     enum: ['pending', 'active', 'inactive', 'suspended'],
     default: 'pending'
+  },
+  documents: {
+    licenseFile: String,
+    idProof: String
+  },
+  rating: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 5
+  },
+  totalReviews: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: true
 });
+
+// Add indexes
+doctorSchema.index({ userId: 1 });
+doctorSchema.index({ registrationNumber: 1 }, { unique: true });
+doctorSchema.index({ specializations: 1 });
+doctorSchema.index({ 'clinicLocation.city': 1 });
+doctorSchema.index({ verificationStatus: 1 });
+doctorSchema.index({ status: 1 });
 
 // Index for text search
 doctorSchema.index({

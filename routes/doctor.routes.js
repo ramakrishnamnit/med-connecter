@@ -624,7 +624,7 @@ router.post('/:id/verify', AuthMiddleware.authenticate, AuthMiddleware.authorize
 
 /**
  * @swagger
- * /api/doctors/reviews:
+ * /api/v1/doctors/reviews:
  *   get:
  *     tags:
  *       - Doctors
@@ -635,11 +635,11 @@ router.post('/:id/verify', AuthMiddleware.authenticate, AuthMiddleware.authorize
  *       200:
  *         description: Reviews retrieved successfully
  */
-router.get('/profile/reviews', AuthMiddleware.authenticate, DoctorHandler.getDoctorReviews);
+router.get('/reviews', AuthMiddleware.authenticate, DoctorHandler.getDoctorReviews);
 
 /**
  * @swagger
- * /api/doctors/appointments:
+ * /api/v1/doctors/appointments:
  *   get:
  *     tags:
  *       - Doctors
@@ -654,7 +654,7 @@ router.get('/appointments', AuthMiddleware.authenticate, DoctorHandler.getAppoin
 
 /**
  * @swagger
- * /api/doctors/appointments/{id}:
+ * /api/v1/doctors/appointments/{id}:
  *   put:
  *     tags:
  *       - Doctors
@@ -687,7 +687,7 @@ router.put('/appointments/:id', AuthMiddleware.authenticate, DoctorHandler.updat
 
 /**
  * @swagger
- * /api/doctors/profile-picture:
+ * /api/v1/doctors/profile-picture:
  *   put:
  *     tags:
  *       - Doctors
@@ -1006,8 +1006,6 @@ router.put('/profile/availability', AuthMiddleware.authenticate, AuthMiddleware.
  *                       type: string
  *                     registrationNumber:
  *                       type: string
- *                     isRegistrationNumberVerified:
- *                       type: boolean
  *                     status:
  *                       type: string
  *                       enum: [pending, approved, rejected]
