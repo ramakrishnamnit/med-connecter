@@ -199,7 +199,7 @@ app.use('/api/v1/appointments', appointmentRoutes);
 app.use('/api/v1/reviews', reviewRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 app.use('/api/v1/payments', paymentRoutes);
-app.use('/api/v1/chat', chatRoutes);
+app.use('/api/v1/chats', chatRoutes);
 app.use('/api/v1/video', videoRoutes);
 app.use('/api/v1/admin', adminRoutes);
 

@@ -6,6 +6,10 @@ const { isValidRegistrationNumber } = require('../utils/helpers');
 const { validationResult } = require('express-validator');
 const logger = require('../utils/logger');
 const mongoose = require('mongoose');
+const axios = require('axios');
+const xml2js = require('xml2js');
+
+const BIG_REGISTER_URL = 'https://webservice.bigregister.cibg.nl/';
 
 class DoctorHandler {
   // Verify registration number
@@ -770,6 +774,57 @@ class DoctorHandler {
     } catch (error) {
       logger.error('Get unavailability error:', error);
       res.status(500).json({ success: false, error: 'Failed to fetch unavailability' });
+    }
+  }
+
+  static async getDoctorFromBigRegister(req, res) {
+    try {
+      const { registerNumber } = req.query;
+      if (!registerNumber) {
+        return res.status(400).json({ message: 'registerNumber is required' });
+      }
+      // Build SOAP envelope
+      const soapEnvelope = `<?xml version="1.0" encoding="UTF-8"?>
+        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                          xmlns:web="https://webservice.bigregister.cibg.nl/">
+           <soapenv:Header/>
+           <soapenv:Body>
+              <web:ListHcpApprox4>
+                 <web:request>
+                    <web:WebSite>Ribiz</web:WebSite>
+                    <web:RegistrationNumber>${registerNumber}</web:RegistrationNumber>
+                 </web:request>
+              </web:ListHcpApprox4>
+           </soapenv:Body>
+        </soapenv:Envelope>`;
+      // Make SOAP request
+      const response = await axios.post(BIG_REGISTER_URL, soapEnvelope, {
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          'SOAPAction': ''
+        },
+        timeout: 10000
+      });
+      // Parse XML response
+      xml2js.parseString(response.data, { explicitArray: false }, (err, result) => {
+        if (err) {
+          return res.status(500).json({ message: 'Failed to parse BIG register response' });
+        }
+        try {
+          const body = result['soapenv:Envelope']['soapenv:Body'];
+          const listResponse = body['ns2:ListHcpApprox4Response'] || body['ListHcpApprox4Response'];
+          const returnData = listResponse?.return;
+          if (!returnData || !returnData.hcpApproxList || !returnData.hcpApproxList.hcpApprox) {
+            return res.status(404).json({ message: 'Doctor not found in BIG register' });
+          }
+          res.json(returnData.hcpApproxList.hcpApprox);
+        } catch (parseErr) {
+          return res.status(404).json({ message: 'Doctor not found in BIG register' });
+        }
+      });
+    } catch (error) {
+      console.error('BIG register SOAP error:', error);
+      res.status(500).json({ message: 'Error fetching from BIG register' });
     }
   }
 }

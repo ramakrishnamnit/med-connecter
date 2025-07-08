@@ -63,8 +63,12 @@ const UserHandler = {
         return res.status(404).json({ message: 'User not found' });
       }
 
-      // Upload to S3
-      const avatarUrl = await AWSService.uploadFile(req.file, 'profile-pictures');
+      // Upload to S3 using the correct method
+      const avatarUrl = await AWSService.uploadToS3(
+        req.file.buffer,
+        req.file.originalname,
+        req.file.mimetype
+      );
 
       // Update user's avatar URL
       user.avatar = avatarUrl;

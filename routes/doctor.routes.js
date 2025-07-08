@@ -594,13 +594,38 @@ router.get('/getById', DoctorHandler.getDoctorById);
  *     tags:
  *       - Doctors
  *     summary: Get doctor's appointments
+ *     description: Get all appointments for a specific doctor. Requires doctorId as a query parameter.
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: doctorId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Doctor ID
  *     responses:
  *       200:
  *         description: Appointments retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 appointments:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Appointment'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Doctor not found
+ *       500:
+ *         description: Server error
  */
-router.get('/appointments', AuthMiddleware.authenticate, DoctorHandler.getAppointments);
+router.get('/appointments', DoctorHandler.getAppointments);
 
 /**
  * @swagger
@@ -1113,5 +1138,36 @@ router.delete('/unavailability', AuthMiddleware.authenticate, AuthMiddleware.aut
  *         description: Server error
  */
 router.get('/unavailability', DoctorHandler.getUnavailability);
+
+/**
+ * @swagger
+ * /api/v1/doctors/big-register:
+ *   get:
+ *     tags:
+ *       - Doctors
+ *     summary: Get doctor details from BIG register
+ *     description: Fetch doctor details from the Dutch BIG register using the registration number (BIG number).
+ *     parameters:
+ *       - in: query
+ *         name: registerNumber
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: BIG registration number
+ *     responses:
+ *       200:
+ *         description: Doctor details retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Invalid or missing registration number
+ *       404:
+ *         description: Doctor not found in BIG register
+ *       500:
+ *         description: Server error
+ */
+router.get('/big-register', DoctorHandler.getDoctorFromBigRegister);
 
 module.exports = router;

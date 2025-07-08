@@ -73,11 +73,17 @@ const router = express.Router();
  *   get:
  *     tags:
  *       - Appointments
- *     summary: Get user's appointments
- *     description: Retrieve all appointments for the authenticated user (patient or doctor)
+ *     summary: Get appointments
+ *     description: Retrieve all appointments for the authenticated user (patient or doctor), or for a specific doctor if doctorId is provided as a query parameter.
  *     security:
  *       - bearerAuth: []
  *     parameters:
+ *       - in: query
+ *         name: doctorId
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: Doctor ID (optional, if provided returns appointments for that doctor)
  *       - in: query
  *         name: status
  *         schema:
@@ -125,6 +131,7 @@ const router = express.Router();
  *       500:
  *         description: Server error
  */
+router.get('/', AuthMiddleware.authenticate, AppointmentHandler.getAppointments);
 
 /**
  * @swagger
@@ -133,7 +140,7 @@ const router = express.Router();
  *     tags:
  *       - Appointments
  *     summary: Create a new appointment
- *     description: Create a new appointment with a doctor
+ *     description: Create a new appointment with a doctor. If patientId is not provided, the authenticated user is used as the patient.
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -147,20 +154,24 @@ const router = express.Router();
  *               - date
  *               - timeSlot
  *               - type
+ *               - reason
  *             properties:
  *               doctorId:
  *                 type: string
  *                 description: ID of the doctor
+ *               patientId:
+ *                 type: string
+ *                 description: (Optional) ID of the patient. If not provided, the authenticated user is used.
  *               date:
  *                 type: string
  *                 format: date
  *                 description: Appointment date (YYYY-MM-DD)
  *               timeSlot:
  *                 type: string
- *                 description: Time slot for the appointment
+ *                 description: Time slot for the appointment (e.g., 09:00-09:30)
  *               type:
  *                 type: string
- *                 enum: [in-person, video]
+ *                 enum: [in-person, video, phone]
  *                 description: Type of appointment
  *               reason:
  *                 type: string
@@ -178,9 +189,33 @@ const router = express.Router();
  *         description: Unauthorized
  *       404:
  *         description: Doctor not found
+ *       409:
+ *         description: Time slot not available
  *       500:
  *         description: Server error
  */
+router.post('/', 
+  AuthMiddleware.authenticate,
+  [
+    body('doctorId').isMongoId().withMessage('Invalid doctor ID'),
+    body('date').isDate().withMessage('Invalid date format'),
+    body('timeSlot').isString().withMessage('Time slot is required'),
+    body('type').isIn(['in-person', 'video']).withMessage('Invalid appointment type'),
+    body('reason').optional().isString().withMessage('Reason must be a string')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Creating new appointment', {
+        userId: req.user.id,
+        doctorId: req.body.doctorId,
+        type: req.body.type
+      });
+      await AppointmentHandler.createAppointment(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /**
  * @swagger
@@ -213,6 +248,20 @@ const router = express.Router();
  *       500:
  *         description: Server error
  */
+router.get('/:id', 
+  AuthMiddleware.authenticate,
+  async (req, res, next) => {
+    try {
+      logger.info('Fetching appointment details', {
+        userId: req.user.id,
+        appointmentId: req.params.id
+      });
+      await AppointmentHandler.getAppointment(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /**
  * @swagger
@@ -262,6 +311,25 @@ const router = express.Router();
  *       500:
  *         description: Server error
  */
+router.put('/:id/status', 
+  AuthMiddleware.authenticate,
+  [
+    body('status').isIn(['pending', 'confirmed', 'cancelled', 'completed'])
+      .withMessage('Invalid appointment status')
+  ],
+  async (req, res, next) => {
+    try {
+      logger.info('Updating appointment status', {
+        userId: req.user.id,
+        appointmentId: req.params.id,
+        newStatus: req.body.status
+      });
+      await AppointmentHandler.updateAppointmentStatus(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /**
  * @swagger
@@ -310,85 +378,6 @@ const router = express.Router();
  *       500:
  *         description: Server error
  */
-
-/**
- * @route POST /api/v1/appointments
- * @desc Create a new appointment
- * @access Private
- */
-router.post('/', 
-  AuthMiddleware.authenticate,
-  [
-    body('doctorId').isMongoId().withMessage('Invalid doctor ID'),
-    body('date').isDate().withMessage('Invalid date format'),
-    body('timeSlot').isString().withMessage('Time slot is required'),
-    body('type').isIn(['in-person', 'video']).withMessage('Invalid appointment type'),
-    body('reason').optional().isString().withMessage('Reason must be a string')
-  ],
-  async (req, res, next) => {
-    try {
-      logger.info('Creating new appointment', {
-        userId: req.user.id,
-        doctorId: req.body.doctorId,
-        type: req.body.type
-      });
-      await AppointmentHandler.createAppointment(req, res);
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-/**
- * @route GET /api/v1/appointments/:id
- * @desc Get appointment by ID
- * @access Private
- */
-router.get('/:id', 
-  AuthMiddleware.authenticate,
-  async (req, res, next) => {
-    try {
-      logger.info('Fetching appointment details', {
-        userId: req.user.id,
-        appointmentId: req.params.id
-      });
-      await AppointmentHandler.getAppointment(req, res);
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-/**
- * @route PUT /api/v1/appointments/:id/status
- * @desc Update appointment status
- * @access Private
- */
-router.put('/:id/status', 
-  AuthMiddleware.authenticate,
-  [
-    body('status').isIn(['pending', 'confirmed', 'cancelled', 'completed'])
-      .withMessage('Invalid appointment status')
-  ],
-  async (req, res, next) => {
-    try {
-      logger.info('Updating appointment status', {
-        userId: req.user.id,
-        appointmentId: req.params.id,
-        newStatus: req.body.status
-      });
-      await AppointmentHandler.updateAppointmentStatus(req, res);
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-/**
- * @route PUT /api/v1/appointments/:id/notes
- * @desc Update appointment notes (doctor only)
- * @access Private (Doctor only)
- */
 router.put('/:id/notes', 
   AuthMiddleware.authenticate,
   AuthMiddleware.authorize(['doctor']),
@@ -409,23 +398,13 @@ router.put('/:id/notes',
 );
 
 /**
- * @route GET /api/v1/appointments
- * @desc Get all appointments for the logged in user (patient or doctor)
- * @access Private
- */
-router.get('/', 
-  AuthMiddleware.authenticate,
-  AppointmentHandler.getAppointments
-);
-
-/**
  * @swagger
- * /api/v1/appointments/available-slots:
+ * /api/v1/appointments/slots/available:
  *   get:
  *     tags:
  *       - Appointments
- *     summary: Get available time slots
- *     description: Get available time slots for a specific doctor and date
+ *     summary: Get available time slots for a date range
+ *     description: Get available time slots for a specific doctor for each day in the given date range
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -436,12 +415,19 @@ router.get('/',
  *           type: string
  *         description: Doctor ID
  *       - in: query
- *         name: date
+ *         name: startDate
  *         required: true
  *         schema:
  *           type: string
  *           format: date
- *         description: Date to check availability (YYYY-MM-DD)
+ *         description: Start date (YYYY-MM-DD)
+ *       - in: query
+ *         name: endDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: End date (YYYY-MM-DD)
  *     responses:
  *       200:
  *         description: Available slots retrieved successfully
@@ -450,11 +436,19 @@ router.get('/',
  *             schema:
  *               type: object
  *               properties:
- *                 slots:
+ *                 availability:
  *                   type: array
  *                   items:
- *                     type: string
- *                     description: Available time slot
+ *                     type: object
+ *                     properties:
+ *                       date:
+ *                         type: string
+ *                         format: date
+ *                       slots:
+ *                         type: array
+ *                         items:
+ *                           type: string
+ *                           description: Available time slot
  *       400:
  *         description: Invalid request data
  *       401:
@@ -464,20 +458,22 @@ router.get('/',
  *       500:
  *         description: Server error
  */
-router.get('/available-slots',
+router.get('/slots/available',
   AuthMiddleware.authenticate,
   [
     query('doctorId').isMongoId().withMessage('Invalid doctor ID'),
-    query('date').isDate().withMessage('Invalid date format')
+    query('startDate').isDate().withMessage('Invalid start date'),
+    query('endDate').isDate().withMessage('Invalid end date')
   ],
   async (req, res, next) => {
     try {
-      logger.info('Fetching available slots', {
+      logger.info('Fetching available slots for range', {
         userId: req.user.id,
         doctorId: req.query.doctorId,
-        date: req.query.date
+        startDate: req.query.startDate,
+        endDate: req.query.endDate
       });
-      await AppointmentHandler.getAvailableSlots(req, res);
+      await AppointmentHandler.getAvailableSlotsForRange(req, res);
     } catch (error) {
       next(error);
     }
